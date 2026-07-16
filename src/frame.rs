@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::time::SystemTime;
+use std::{sync::Arc, time::SystemTime};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Frame {
@@ -8,7 +8,7 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     #[serde(skip_serializing)]
-    pub data: Vec<u8>,
+    pub data: Arc<[u8]>,
 }
 impl Frame {
     pub fn blank(sequence: u64, width: u32, height: u32) -> Self {
@@ -20,7 +20,7 @@ impl Frame {
                 .as_millis(),
             width,
             height,
-            data: vec![0; (width * height * 3) as usize],
+            data: Arc::from(vec![0; (width * height * 3) as usize]),
         }
     }
 
@@ -33,7 +33,7 @@ impl Frame {
                 .as_millis(),
             width,
             height,
-            data,
+            data: Arc::from(data),
         }
     }
 }

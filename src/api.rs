@@ -1,11 +1,14 @@
 use crate::{
     auth::{Authenticator, BearerAuthenticator},
     config::Config,
-    events::{Event, EventBus},
+    events::EventBus,
+    frame_buffer::FrameBuffer,
     health::Health,
     metrics::Metrics,
     preview::Preview,
-    sources::{AddSource, SourceRegistry},
+    runtime::RuntimeStatus,
+    sources::{AddSource, SourceManagerError, VideoSourceManager},
+    vision::{VisionMetrics, VisionState},
 };
 use axum::{
     extract::{Path, State},
@@ -15,7 +18,7 @@ use axum::{
         sse::{Event as SseEvent, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use serde_json::json;
@@ -24,27 +27,41 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 #[derive(Clone)]
 pub struct AppState {
+    pub config: Config,
     pub health: Health,
     pub metrics: Metrics,
-    pub sources: SourceRegistry,
+    pub sources: VideoSourceManager,
     pub events: EventBus,
     pub authenticator: BearerAuthenticator,
     pub preview: Preview,
+    pub runtime: RuntimeStatus,
+    pub frame_buffer: FrameBuffer,
+    pub vision: VisionState,
+    pub vision_metrics: VisionMetrics,
 }
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(config: Config, frame_buffer: FrameBuffer) -> Self {
+        let events = EventBus::new();
         Self {
+            config: config.clone(),
             health: Health::default(),
             metrics: Metrics::new(),
-            sources: SourceRegistry::new(),
-            events: EventBus::new(),
+            sources: VideoSourceManager::new(config.fps, events.clone()),
+            events,
             authenticator: BearerAuthenticator::from_env(),
             preview: Preview::new(),
+            runtime: RuntimeStatus::default(),
+            frame_buffer,
+            vision: VisionState::default(),
+            vision_metrics: VisionMetrics::default(),
         }
     }
 }
 
-pub async fn serve(config: Config, state: AppState) -> Result<(), std::io::Error> {
+pub async fn serve(
+    state: AppState,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), std::io::Error> {
     let shared = Arc::new(state);
     let app = Router::new()
         .route("/health/live", get(live))
@@ -53,18 +70,27 @@ pub async fn serve(config: Config, state: AppState) -> Result<(), std::io::Error
         .route("/api/v1/status", get(status))
         .route("/api/v1/version", get(version))
         .route("/api/v1/sources", get(list_sources).post(add_source))
+        .route("/api/v1/sources/:id", get(get_source).delete(remove_source))
         .route("/api/v1/sources/:id/start", post(start_source))
         .route("/api/v1/sources/:id/stop", post(stop_source))
-        .route("/api/v1/sources/:id", delete(remove_source))
+        .route("/api/v1/sources/:id/restart", post(restart_source))
         .route("/api/v1/config", get(show_config))
         .route("/api/v1/events", get(events))
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/preview", get(preview))
+        .route("/api/v1/vision/latest", get(vision_latest))
         .layer(middleware::from_fn_with_state(shared.clone(), require_auth))
         .with_state(shared);
-    let listener = tokio::net::TcpListener::bind(&config.bind).await?;
-    tracing::info!(address=%config.bind, "administration API listening");
-    axum::serve(listener, app).await
+    let listener = tokio::net::TcpListener::bind(&shared.config.bind).await?;
+    shared.runtime.mark_http_started().await;
+    tracing::info!(address=%shared.config.bind, "HTTP server started");
+    let graceful = async move {
+        let _ = shutdown.changed().await;
+        tracing::info!("HTTP server shutting down");
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(graceful)
+        .await
 }
 async fn live() -> impl IntoResponse {
     Json(json!({"status":"ok"}))
@@ -84,13 +110,22 @@ async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     )
 }
 async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let source_metrics = state.sources.prometheus().await;
+    let vision_metrics = state.vision_metrics.prometheus();
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.prometheus(),
+        format!(
+            "{}{}{}",
+            state.metrics.prometheus(),
+            source_metrics,
+            vision_metrics
+        ),
     )
 }
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(state.metrics.snapshot())
+    Json(
+        json!({"version": env!("CARGO_PKG_VERSION"), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity()}}),
+    )
 }
 async fn version() -> impl IntoResponse {
     Json(json!({"name":"sentinel-streaming","version":env!("CARGO_PKG_VERSION")}))
@@ -101,6 +136,12 @@ async fn whoami(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn preview(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.preview.get().await {
         Some(bytes) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+async fn vision_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.vision.latest().await {
+        Some(analysis) => (StatusCode::OK, Json(json!(analysis))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -146,63 +187,65 @@ async fn add_source(
             });
             (StatusCode::CREATED, Json(json!(source)))
         }
-        Err(error) => (StatusCode::CONFLICT, Json(json!({"error": error}))),
+        Err(error) => manager_error(error),
     }
 }
 async fn start_source(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    set_source_state(id, state, true).await
+    match state.sources.start(&id).await {
+        Ok(source) => (StatusCode::OK, Json(json!(source))),
+        Err(error) => manager_error(error),
+    }
 }
 async fn stop_source(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    set_source_state(id, state, false).await
-}
-async fn set_source_state(
-    id: String,
-    state: Arc<AppState>,
-    running: bool,
-) -> (StatusCode, Json<serde_json::Value>) {
-    match state.sources.set_running(&id, running).await {
-        Some(source) => {
-            state.events.publish(Event {
-                kind: if running {
-                    "stream_started"
-                } else {
-                    "stream_stopped"
-                }
-                .into(),
-                source_id: Some(id),
-                message: "source state changed".into(),
-            });
-            (StatusCode::OK, Json(json!(source)))
-        }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error":"source not found"})),
-        ),
+    match state.sources.stop(&id).await {
+        Ok(source) => (StatusCode::OK, Json(json!(source))),
+        Err(error) => manager_error(error),
     }
+}
+async fn restart_source(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.sources.restart(&id).await {
+        Ok(source) => (StatusCode::OK, Json(json!(source))),
+        Err(error) => manager_error(error),
+    }
+}
+async fn get_source(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.sources.get(&id).await {
+        Ok(source) => (StatusCode::OK, Json(json!(source))),
+        Err(error) => manager_error(error),
+    }
+}
+fn manager_error(error: SourceManagerError) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match &error {
+        SourceManagerError::NotFound => StatusCode::NOT_FOUND,
+        SourceManagerError::AlreadyExists => StatusCode::CONFLICT,
+        SourceManagerError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
+        SourceManagerError::Camera(_) => StatusCode::BAD_GATEWAY,
+    };
+    (status, Json(json!({"error": error.to_string()})))
 }
 async fn remove_source(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if state.sources.remove(&id).await {
-        state.events.publish(Event {
-            kind: "source_removed".into(),
-            source_id: Some(id),
-            message: "source removed".into(),
-        });
-        StatusCode::NO_CONTENT
-    } else {
-        StatusCode::NOT_FOUND
+    match state.sources.remove(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => manager_error(error).into_response(),
     }
 }
 async fn show_config(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!({"bind":"0.0.0.0:8080","fps":30}))
+    Json(json!(_state.config))
 }
 async fn events(
     State(state): State<Arc<AppState>>,
