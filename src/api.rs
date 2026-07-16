@@ -5,18 +5,20 @@ use crate::{
     frame_buffer::FrameBuffer,
     health::Health,
     metrics::Metrics,
+    mjpeg::MjpegStream,
     preview::Preview,
     runtime::RuntimeStatus,
     sources::{AddSource, SourceManagerError, VideoSourceManager},
     vision::{VisionMetrics, VisionState},
 };
 use axum::{
+    body::Body,
     extract::{Path, State},
     http::{header, Request, StatusCode},
     middleware::{self, Next},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
-        IntoResponse,
+        IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -38,6 +40,7 @@ pub struct AppState {
     pub frame_buffer: FrameBuffer,
     pub vision: VisionState,
     pub vision_metrics: VisionMetrics,
+    pub mjpeg: MjpegStream,
 }
 impl AppState {
     pub fn new(config: Config, frame_buffer: FrameBuffer) -> Self {
@@ -54,6 +57,7 @@ impl AppState {
             frame_buffer,
             vision: VisionState::default(),
             vision_metrics: VisionMetrics::default(),
+            mjpeg: MjpegStream::new(frame_buffer.clone()),
         }
     }
 }
@@ -82,6 +86,7 @@ pub async fn serve(
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/preview", get(preview))
         .route("/api/v1/vision/latest", get(vision_latest))
+        .route("/api/v1/streams/:source_id/mjpeg", get(mjpeg))
         .layer(middleware::from_fn_with_state(shared.clone(), require_auth))
         .with_state(shared);
     let listener = tokio::net::TcpListener::bind(&shared.config.bind).await?;
@@ -116,14 +121,16 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let source_metrics = state.sources.prometheus().await;
     let vision_metrics = state.vision_metrics.prometheus();
     let event_metrics = state.events.store().prometheus().await;
+    let mjpeg_metrics = state.mjpeg.metrics.prometheus();
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}",
             state.metrics.prometheus(),
             source_metrics,
             vision_metrics,
-            event_metrics
+            event_metrics,
+            mjpeg_metrics
         ),
     )
 }
@@ -149,6 +156,27 @@ async fn vision_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         Some(analysis) => (StatusCode::OK, Json(json!(analysis))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+async fn mjpeg(
+    Path(source_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if source_id != "builtin" {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"source not found"})),
+        )
+            .into_response();
+    }
+    let stream = state.mjpeg.stream(source_id);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "multipart/x-mixed-replace; boundary=frame",
+        )
+        .body(Body::from_stream(stream))
+        .expect("valid MJPEG response")
 }
 async fn require_auth(
     State(state): State<Arc<AppState>>,

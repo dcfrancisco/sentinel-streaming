@@ -9,6 +9,7 @@ mod frame_buffer;
 mod health;
 mod logging;
 mod metrics;
+mod mjpeg;
 mod pipeline;
 mod preview;
 mod runtime;

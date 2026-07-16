@@ -36,6 +36,8 @@ Vision now performs temporal observation by selecting five frames spaced two sec
 
 The Event Engine stores bounded observation records (default capacity: 1000). Source lifecycle events and vision results are available through `/api/v1/events`, `/api/v1/events/latest`, and `/api/v1/events/{id}`. The existing real-time feed is available at `/api/v1/events/stream`.
 
+Live browser diagnostics are available at `/api/v1/streams/builtin/mjpeg`. The MJPEG consumer reads the latest frames from the `FrameBuffer`, supports multiple clients, and reports viewer, frame, byte, error, and delivery-FPS metrics.
+
 The bounded `FrameBuffer` is the canonical frame store. It defaults to 300 frames, evicts the oldest frame when full, stores RGB payloads behind `Arc`, and exposes latest, previous, sequence lookup, and recent-frame accessors. Preview reads its source frame from this buffer.
 
 AI is not implemented in this milestone. Placeholder interfaces exist for `VisionEngine`, `SceneUnderstanding`, and `EventPublisher`.
