@@ -32,6 +32,8 @@ The manager now owns source lifecycle and runtime metadata. Built-in camera mana
 
 Vision is an optional background consumer of the `FrameBuffer`. When `OPENAI_API_KEY` is available, it analyzes the latest frame every five seconds through the OpenAI Responses API and stores the latest structured scene description at `/api/v1/vision/latest`. Without the key, vision logs a warning and streaming continues normally.
 
+Vision now performs temporal observation by selecting five frames spaced two seconds apart by default. Observations include summaries, changes, activities, and objects; selection and spacing are configurable through `vision.frames` and `vision.spacing_seconds`.
+
 The Event Engine stores bounded observation records (default capacity: 1000). Source lifecycle events and vision results are available through `/api/v1/events`, `/api/v1/events/latest`, and `/api/v1/events/{id}`. The existing real-time feed is available at `/api/v1/events/stream`.
 
 The bounded `FrameBuffer` is the canonical frame store. It defaults to 300 frames, evicts the oldest frame when full, stores RGB payloads behind `Arc`, and exposes latest, previous, sequence lookup, and recent-frame accessors. Preview reads its source frame from this buffer.

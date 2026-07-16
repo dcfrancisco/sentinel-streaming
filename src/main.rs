@@ -21,7 +21,7 @@ use cli::{AuthCommand, Cli, Command, ConfigCommand, ProfileCommand, SourceComman
 use config::Config;
 use frame_buffer::FrameBuffer;
 use pipeline::Pipeline;
-use vision::VisionScheduler;
+use vision::{FrameSelector, VisionScheduler};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -74,6 +74,7 @@ async fn serve(bind: String) -> anyhow::Result<()> {
             frame_buffer.clone(),
             state.vision.clone(),
             state.vision_metrics.clone(),
+            FrameSelector::new(config.vision.frames, config.vision.spacing_seconds),
             config.vision.interval_seconds,
             shutdown_tx.subscribe(),
             state.events.clone(),

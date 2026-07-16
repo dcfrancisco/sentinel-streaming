@@ -22,12 +22,16 @@ impl Default for EventsConfig {
 pub struct VisionConfig {
     pub enabled: bool,
     pub interval_seconds: u64,
+    pub frames: usize,
+    pub spacing_seconds: u64,
 }
 impl Default for VisionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             interval_seconds: 5,
+            frames: 5,
+            spacing_seconds: 2,
         }
     }
 }
