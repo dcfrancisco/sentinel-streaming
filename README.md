@@ -4,7 +4,7 @@ Sentinel Streaming is a headless, extensible Rust streaming engine for the Senti
 
 ## Administration
 
-Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` and exposes:
+Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` by default and exposes:
 
 - `GET /health/live`
 - `GET /health/ready`
@@ -17,20 +17,39 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 - `DELETE /api/v1/sources/{id}`
 - `GET /api/v1/config`
 - `GET /metrics`
-- `GET /api/v1/events` (Server-Sent Events)
+- `GET /api/v1/events`
+- `GET /api/v1/events/latest`
+- `GET /api/v1/events/{id}`
+- `GET /api/v1/events/stream` (Server-Sent Events)
 - `GET /api/v1/preview` (latest JPEG camera frame)
+- `GET /api/v1/vision/latest`
+- `GET /api/v1/streams/{source_id}/mjpeg`
+
+When `SENTINEL_API_TOKEN` is set, all administration endpoints except liveness,
+readiness, and version require `Authorization: Bearer <token>`.
 
 The CLI is API-backed and includes `serve`, `status`, `version`, `source list`, `source add`, `source remove`, `source start`, `source stop`, `config show`, and `metrics`.
 
 ## MVP architecture
 
-The built-in source uses the native camera backend provided by Nokhwa and captures device index `0`. Every frame then passes through the configurable processing pipeline. Preview is enabled by default; buffer, recording, vision, and event publisher stages are present as disabled no-op extension points. USB, RTSP, ONVIF, and video-file adapters remain isolated extension points for later milestones. The latest captured frame is JPEG-encoded by the preview stage and exposed at `/api/v1/preview` for browser inspection.
+The built-in source uses the native camera backend provided by Nokhwa. It captures
+device index `0` by default; select another camera with
+`SENTINEL_CAMERA_INDEX`. Every frame passes through the configurable processing
+pipeline. Preview and buffering are enabled by default; recording, vision, and
+event publisher stages remain extension points. USB, RTSP, ONVIF, and video-file
+adapters remain future work. The latest captured frame is JPEG-encoded by the
+preview stage and exposed at `/api/v1/preview`.
 
 The `VideoSourceManager` owns live source implementations. The pipeline consumes the manager through the `FrameProvider` abstraction and does not depend on concrete camera types. The `serve` runtime coordinates configuration, logging, metrics, source initialization, pipeline startup, HTTP serving, signal handling, and graceful shutdown.
 
 The manager now owns source lifecycle and runtime metadata. Built-in camera management supports start, stop, restart, failure tracking, reconnect attempts, frame counters, resolution, FPS, uptime, and internal lifecycle events. Other source types return `501 Not Implemented` until their adapters are added.
 
-Vision is an optional background consumer of the `FrameBuffer`. When `OPENAI_API_KEY` is available, it analyzes the latest frame every five seconds through the OpenAI Responses API and stores the latest structured scene description at `/api/v1/vision/latest`. Without the key, vision logs a warning and streaming continues normally.
+Vision is an optional background consumer of the `FrameBuffer`. When
+`OPENAI_API_KEY` is available, it analyzes buffered frames every five seconds
+through the OpenAI Responses API and stores the latest structured scene
+observation at `/api/v1/vision/latest`. Without the key, vision is disabled and
+streaming continues normally. Enabling vision sends camera frames to OpenAI and
+may incur API usage costs.
 
 Vision now performs temporal observation by selecting five frames spaced two seconds apart by default. Observations include summaries, changes, activities, and objects; selection and spacing are configurable through `vision.frames` and `vision.spacing_seconds`.
 
@@ -40,7 +59,10 @@ Live browser diagnostics are available at `/api/v1/streams/builtin/mjpeg`. The M
 
 The bounded `FrameBuffer` is the canonical frame store. It defaults to 300 frames, evicts the oldest frame when full, stores RGB payloads behind `Arc`, and exposes latest, previous, sequence lookup, and recent-frame accessors. Preview reads its source frame from this buffer.
 
-AI is not implemented in this milestone. Placeholder interfaces exist for `VisionEngine`, `SceneUnderstanding`, and `EventPublisher`.
+Placeholder interfaces remain for future providers and processing stages. The
+current OpenAI Vision provider performs scene observation only; it does not make
+security decisions, generate alerts, or implement face recognition or object
+detection policies.
 
 ## Build
 
@@ -49,6 +71,44 @@ cargo fmt --all
 cargo test
 cargo run -- version
 ```
+
+## Local camera test
+
+On macOS, grant Camera permission to Terminal or the IDE running the service.
+If port `8080` is occupied, use another port such as `8081`:
+
+```bash
+SENTINEL_API_TOKEN=dev-token \
+SENTINEL_CAMERA_INDEX=0 \
+cargo run -- serve --bind 127.0.0.1:8081
+```
+
+Check health and source status:
+
+```bash
+curl http://127.0.0.1:8081/health/live
+curl http://127.0.0.1:8081/health/ready
+curl -H "Authorization: Bearer dev-token" \
+  http://127.0.0.1:8081/api/v1/sources
+```
+
+Save and view a JPEG preview:
+
+```bash
+curl -H "Authorization: Bearer dev-token" \
+  http://127.0.0.1:8081/api/v1/preview --output preview.jpg
+open preview.jpg
+```
+
+Test the live MJPEG stream:
+
+```bash
+curl -N -H "Authorization: Bearer dev-token" \
+  http://127.0.0.1:8081/api/v1/streams/builtin/mjpeg
+```
+
+To enable optional OpenAI vision, provide `OPENAI_API_KEY` when starting the
+service. Do not commit API keys or paste them into logs or shell transcripts.
 
 ## License
 
