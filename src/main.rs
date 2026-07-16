@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve { bind } => serve(bind).await?,
         Command::Status { endpoint } => cli::status(&endpoint).await?,
+        Command::Stop { endpoint } => cli::request(reqwest::Method::POST, &endpoint, None).await?,
         Command::Version => println!("sentinel-streaming {}", env!("CARGO_PKG_VERSION")),
         Command::Source { command } => source_command(command).await?,
         Command::Config {
@@ -51,7 +52,8 @@ async fn serve(bind: String) -> anyhow::Result<()> {
     };
     tracing::info!(config = ?config, "configuration loaded");
     let frame_buffer = FrameBuffer::new(config.buffer.capacity);
-    let state = api::AppState::new(config.clone(), frame_buffer.clone());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let state = api::AppState::new(config.clone(), frame_buffer.clone(), shutdown_tx.clone());
     state
         .sources
         .start("builtin")
@@ -69,7 +71,6 @@ async fn serve(bind: String) -> anyhow::Result<()> {
     );
     state.runtime.mark_pipeline_initialized().await;
     tracing::info!("pipeline initialized");
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let vision_task = if config.vision.enabled {
         VisionScheduler::spawn(
             frame_buffer.clone(),

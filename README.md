@@ -10,6 +10,7 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 - `GET /health/ready`
 - `GET /api/v1/status`
 - `GET /api/v1/version`
+- `POST /api/v1/stop`
 - `GET /api/v1/sources`
 - `POST /api/v1/sources`
 - `POST /api/v1/sources/{id}/start`
@@ -28,7 +29,7 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 When `SENTINEL_API_TOKEN` is set, all administration endpoints except liveness,
 readiness, and version require `Authorization: Bearer <token>`.
 
-The CLI is API-backed and includes `serve`, `status`, `version`, `source list`, `source add`, `source remove`, `source start`, `source stop`, `config show`, and `metrics`.
+The CLI is API-backed and includes `serve`, `status`, `stop`, `version`, `source list`, `source add`, `source remove`, `source start`, `source stop`, `config show`, and `metrics`.
 
 ## MVP architecture
 
@@ -109,6 +110,13 @@ curl -N -H "Authorization: Bearer dev-token" \
 
 To enable optional OpenAI vision, provide `OPENAI_API_KEY` when starting the
 service. Do not commit API keys or paste them into logs or shell transcripts.
+
+Stop a running release server gracefully from another terminal:
+
+```bash
+./target/release/sentinel-streaming stop \
+  --endpoint http://127.0.0.1:8081/api/v1/stop
+```
 
 ## License
 

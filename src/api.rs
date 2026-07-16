@@ -41,9 +41,14 @@ pub struct AppState {
     pub vision: VisionState,
     pub vision_metrics: VisionMetrics,
     pub mjpeg: MjpegStream,
+    pub shutdown: tokio::sync::watch::Sender<bool>,
 }
 impl AppState {
-    pub fn new(config: Config, frame_buffer: FrameBuffer) -> Self {
+    pub fn new(
+        config: Config,
+        frame_buffer: FrameBuffer,
+        shutdown: tokio::sync::watch::Sender<bool>,
+    ) -> Self {
         let events = EventBus::new(config.events.capacity);
         let mjpeg = MjpegStream::new(frame_buffer.clone());
         Self {
@@ -59,6 +64,7 @@ impl AppState {
             vision: VisionState::default(),
             vision_metrics: VisionMetrics::default(),
             mjpeg,
+            shutdown,
         }
     }
 }
@@ -74,6 +80,7 @@ pub async fn serve(
         .route("/metrics", get(metrics))
         .route("/api/v1/status", get(status))
         .route("/api/v1/version", get(version))
+        .route("/api/v1/stop", post(stop))
         .route("/api/v1/sources", get(list_sources).post(add_source))
         .route("/api/v1/sources/:id", get(get_source).delete(remove_source))
         .route("/api/v1/sources/:id/start", post(start_source))
@@ -142,6 +149,11 @@ async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 async fn version() -> impl IntoResponse {
     Json(json!({"name":"sentinel-streaming","version":env!("CARGO_PKG_VERSION")}))
+}
+async fn stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.runtime.mark_shutting_down().await;
+    let _ = state.shutdown.send(true);
+    Json(json!({"status":"stopping"}))
 }
 async fn whoami(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!({"principal": state.authenticator.principal()}))

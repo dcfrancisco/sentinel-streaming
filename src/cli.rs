@@ -20,6 +20,10 @@ pub enum Command {
         #[arg(long, default_value = "http://127.0.0.1:8080/api/v1/status")]
         endpoint: String,
     },
+    Stop {
+        #[arg(long, default_value = "http://127.0.0.1:8080/api/v1/stop")]
+        endpoint: String,
+    },
     Version,
     Source {
         #[command(subcommand)]
