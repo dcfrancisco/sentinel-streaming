@@ -29,7 +29,7 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 When `SENTINEL_API_TOKEN` is set, all administration endpoints except liveness,
 readiness, and version require `Authorization: Bearer <token>`.
 
-The CLI is API-backed and includes `serve`, `status`, `stop`, `version`, `source list`, `source add`, `source remove`, `source start`, `source stop`, `config show`, and `metrics`.
+The CLI is API-backed and includes `serve`, `status`, `stop`, `version`, `endurance`, `source list`, `source add`, `source remove`, `source start`, `source stop`, `config show`, and `metrics`.
 
 ## MVP architecture
 
@@ -70,7 +70,19 @@ detection policies.
 ```bash
 cargo fmt --all
 cargo test
+cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- version
+```
+
+Run a short hardware-independent endurance validation:
+
+```bash
+cargo run -- endurance \
+  --duration 60s \
+  --source synthetic \
+  --viewers 5 \
+  --vision mock \
+  --report endurance-report.json
 ```
 
 ## Local camera test

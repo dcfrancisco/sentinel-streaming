@@ -1,28 +1,14 @@
-mod api;
-mod auth;
-mod cli;
-mod config;
-mod errors;
-mod events;
-mod frame;
-mod frame_buffer;
-mod health;
-mod logging;
-mod metrics;
-mod mjpeg;
-mod pipeline;
-mod preview;
-mod runtime;
-mod sources;
-mod stages;
-mod vision;
-
 use clap::Parser;
-use cli::{Cli, Command, ConfigCommand, SourceCommand};
-use config::Config;
-use frame_buffer::FrameBuffer;
-use pipeline::Pipeline;
-use vision::{FrameSelector, VisionScheduler};
+use sentinel_streaming::{
+    api,
+    cli::{self, Cli, Command, ConfigCommand, SourceCommand},
+    config::Config,
+    endurance,
+    frame_buffer::FrameBuffer,
+    logging,
+    pipeline::Pipeline,
+    vision::{FrameSelector, OpenAiVisionProvider, VisionJob, VisionScheduler},
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,6 +23,30 @@ async fn main() -> anyhow::Result<()> {
             command: ConfigCommand::Show { endpoint },
         } => cli::status(&endpoint).await?,
         Command::Metrics { endpoint } => cli::status(&endpoint).await?,
+        Command::Endurance {
+            duration,
+            source,
+            viewers,
+            vision,
+            report,
+            min_fps,
+        } => {
+            if source != "synthetic" {
+                return Err(anyhow::anyhow!("only --source synthetic is supported"));
+            }
+            if vision != "mock" {
+                return Err(anyhow::anyhow!("only --vision mock is supported"));
+            }
+            let report = endurance::run(endurance::EnduranceOptions {
+                duration: endurance::parse_duration(&duration)?,
+                viewers,
+                vision_mock: vision == "mock",
+                report,
+                min_fps,
+            })
+            .await?;
+            let _ = report;
+        }
         Command::Auth { command } => cli::auth(command).await?,
         Command::Profile { command } => cli::profile(command)?,
     }
@@ -53,7 +63,12 @@ async fn serve(bind: String) -> anyhow::Result<()> {
     tracing::info!(config = ?config, "configuration loaded");
     let frame_buffer = FrameBuffer::new(config.buffer.capacity);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let state = api::AppState::new(config.clone(), frame_buffer.clone(), shutdown_tx.clone());
+    let state = api::AppState::new(
+        config.clone(),
+        frame_buffer.clone(),
+        shutdown_tx.clone(),
+        shutdown_tx.subscribe(),
+    );
     state
         .sources
         .start("builtin")
@@ -63,38 +78,68 @@ async fn serve(bind: String) -> anyhow::Result<()> {
     tracing::info!(source = "built-in-camera", "camera opened");
     let mut pipeline_config = config.pipeline.clone();
     pipeline_config.buffer = config.buffer.enabled;
-    let mut pipeline = Pipeline::new(
-        state.metrics.clone(),
-        state.preview.clone(),
-        frame_buffer.clone(),
-        pipeline_config,
-    );
     state.runtime.mark_pipeline_initialized().await;
     tracing::info!("pipeline initialized");
     let vision_task = if config.vision.enabled {
-        VisionScheduler::spawn(
-            frame_buffer.clone(),
-            state.vision.clone(),
-            state.vision_metrics.clone(),
-            FrameSelector::new(config.vision.frames, config.vision.spacing_seconds),
-            config.vision.interval_seconds,
-            shutdown_tx.subscribe(),
-            state.events.clone(),
-        )
+        VisionScheduler::spawn(VisionJob {
+            buffer: frame_buffer.clone(),
+            state: state.vision.clone(),
+            metrics: state.vision_metrics.clone(),
+            selector: FrameSelector::new(config.vision.frames, config.vision.spacing_seconds),
+            interval_seconds: config.vision.interval_seconds,
+            shutdown: shutdown_tx.subscribe(),
+            events: state.events.clone(),
+            provider: std::sync::Arc::new(
+                OpenAiVisionProvider::from_env().expect("vision provider was checked above"),
+            ),
+            recovery: state.recovery.clone(),
+        })
     } else {
         tracing::info!("vision disabled by configuration");
         None
     };
     let pipeline_state = state.clone();
+    let pipeline_buffer = frame_buffer.clone();
+    let pipeline_shutdown = shutdown_tx.clone();
     let mut pipeline_task = tokio::spawn(async move {
-        pipeline
-            .run(pipeline_state.sources.clone(), pipeline_state, shutdown_rx)
-            .await
+        let mut shutdown = shutdown_rx;
+        loop {
+            let mut pipeline = Pipeline::new(
+                pipeline_state.metrics.clone(),
+                pipeline_state.preview.clone(),
+                pipeline_buffer.clone(),
+                pipeline_config.clone(),
+            );
+            match pipeline
+                .run(
+                    pipeline_state.sources.clone(),
+                    pipeline_state.clone(),
+                    pipeline_shutdown.subscribe(),
+                )
+                .await
+            {
+                Ok(()) => break,
+                Err(error) => {
+                    let started = pipeline_state
+                        .recovery
+                        .begin("pipeline", error.to_string())
+                        .await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                            pipeline_state.recovery.recovered("pipeline", started, "pipeline restarted").await;
+                        }
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() { break; }
+                        }
+                    }
+                }
+            }
+        }
     });
     let mut server_task = tokio::spawn(api::serve(state.clone(), shutdown_tx.subscribe()));
     tokio::select! {
         result = &mut server_task => { shutdown_tx.send(true).ok(); result??; }
-        result = &mut pipeline_task => { shutdown_tx.send(true).ok(); result??; }
+        result = &mut pipeline_task => { shutdown_tx.send(true).ok(); result?; }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("shutdown signal received");
             state.runtime.mark_shutting_down().await;

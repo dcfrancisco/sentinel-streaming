@@ -121,6 +121,9 @@ impl BearerAuthenticator {
             expected: std::env::var("SENTINEL_API_TOKEN").ok().map(Arc::new),
         }
     }
+    pub fn enabled(&self) -> bool {
+        self.expected.is_some()
+    }
 }
 impl Authenticator for BearerAuthenticator {
     fn authenticate(&self, token: Option<&str>) -> bool {

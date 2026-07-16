@@ -37,6 +37,20 @@ pub enum Command {
         #[arg(long, default_value = "http://127.0.0.1:8080/metrics")]
         endpoint: String,
     },
+    Endurance {
+        #[arg(long, default_value = "60s")]
+        duration: String,
+        #[arg(long, default_value = "synthetic")]
+        source: String,
+        #[arg(long, default_value_t = 5)]
+        viewers: usize,
+        #[arg(long, default_value = "mock")]
+        vision: String,
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+        #[arg(long, default_value_t = 20.0)]
+        min_fps: f64,
+    },
     Auth {
         #[command(subcommand)]
         command: AuthCommand,

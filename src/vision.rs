@@ -2,6 +2,7 @@ use crate::{
     events::{EventBus, EventRecord},
     frame::Frame,
     frame_buffer::FrameBuffer,
+    recovery::RecoveryEngine,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -188,26 +189,43 @@ impl VisionProvider for OpenAiVisionProvider {
 }
 
 pub struct VisionScheduler;
+pub struct VisionJob {
+    pub buffer: FrameBuffer,
+    pub state: VisionState,
+    pub metrics: VisionMetrics,
+    pub selector: FrameSelector,
+    pub interval_seconds: u64,
+    pub shutdown: watch::Receiver<bool>,
+    pub events: EventBus,
+    pub provider: Arc<dyn VisionProvider>,
+    pub recovery: RecoveryEngine,
+}
 impl VisionScheduler {
-    pub fn spawn(
-        buffer: FrameBuffer,
-        state: VisionState,
-        metrics: VisionMetrics,
-        selector: FrameSelector,
-        interval_seconds: u64,
-        shutdown: watch::Receiver<bool>,
-        events: EventBus,
-    ) -> Option<tokio::task::JoinHandle<()>> {
+    pub fn spawn(mut job: VisionJob) -> Option<tokio::task::JoinHandle<()>> {
         let provider = OpenAiVisionProvider::from_env()?;
-        let provider: Arc<dyn VisionProvider> = Arc::new(provider);
+        job.provider = Arc::new(provider);
+        Some(Self::spawn_with_provider(job))
+    }
+    pub fn spawn_with_provider(job: VisionJob) -> tokio::task::JoinHandle<()> {
+        let VisionJob {
+            buffer,
+            state,
+            metrics,
+            selector,
+            interval_seconds,
+            shutdown,
+            events,
+            provider,
+            recovery,
+        } = job;
         let interval = std::time::Duration::from_secs(interval_seconds.max(1));
-        Some(tokio::spawn(async move {
+        tokio::spawn(async move {
             let mut shutdown = shutdown;
             let mut ticker = tokio::time::interval(interval);
             loop {
-                tokio::select! { _ = ticker.tick() => { let frames = selector.select(&buffer); if frames.is_empty() { continue; } let frame_count = frames.len(); metrics.request(); let started = Instant::now(); match provider.analyze(frames).await { Ok(analysis) => { let latency = started.elapsed().as_millis() as u64; let timestamp = now_ms(); metrics.success(latency, timestamp, frame_count); state.set(LatestAnalysis { timestamp, analysis: analysis.clone(), provider: provider.name().into(), latency_ms: latency, frames_analyzed: frame_count }).await; let metadata = serde_json::json!({"changes":analysis.changes,"activities":analysis.activities,"frames_analyzed":frame_count}); events.publish_record(EventRecord { id:String::new(), timestamp, source_id:Some("builtin".into()), event_type:"vision.completed".into(), provider:Some(provider.name().into()), summary:analysis.summary.clone(), objects:analysis.objects.clone(), confidence:None, latency_ms:Some(latency), metadata:metadata.clone() }); events.publish_record(EventRecord { id:String::new(), timestamp, source_id:Some("builtin".into()), event_type:"scene.observed".into(), provider:Some(provider.name().into()), summary:analysis.summary.clone(), objects:analysis.objects.clone(), confidence:None, latency_ms:Some(latency), metadata }); tracing::info!(provider=provider.name(), latency_ms=latency, frames_analyzed=frame_count, summary=%analysis.summary, changes=?analysis.changes, activities=?analysis.activities, objects=?analysis.objects, "Vision Observation"); }, Err(error) => { metrics.failure(); events.publish_record(EventRecord { id:String::new(), timestamp:now_ms(), source_id:Some("builtin".into()), event_type:"vision.failed".into(), provider:Some(provider.name().into()), summary:error.clone(), objects:Vec::new(), confidence:None, latency_ms:Some(started.elapsed().as_millis() as u64), metadata:serde_json::json!({"frames_analyzed":frame_count}) }); tracing::warn!(provider=provider.name(), error=%error, frames_analyzed=frame_count, "vision observation failed"); } } }, changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } } }
+                tokio::select! { _ = ticker.tick() => { let frames = selector.select(&buffer); if frames.is_empty() { continue; } let frame_count = frames.len(); metrics.request(); let started = Instant::now(); match provider.analyze(frames).await { Ok(analysis) => { let latency = started.elapsed().as_millis() as u64; let timestamp = now_ms(); metrics.success(latency, timestamp, frame_count); state.set(LatestAnalysis { timestamp, analysis: analysis.clone(), provider: provider.name().into(), latency_ms: latency, frames_analyzed: frame_count }).await; if recovery.monitor.state("vision").await == Some(crate::recovery::ComponentState::Recovering) { recovery.recovered("vision", started, "vision provider recovered").await; } let metadata = serde_json::json!({"changes":analysis.changes,"activities":analysis.activities,"frames_analyzed":frame_count}); events.publish_record(EventRecord { id:String::new(), timestamp, source_id:Some("builtin".into()), event_type:"vision.completed".into(), provider:Some(provider.name().into()), summary:analysis.summary.clone(), objects:analysis.objects.clone(), confidence:None, latency_ms:Some(latency), metadata:metadata.clone() }); events.publish_record(EventRecord { id:String::new(), timestamp, source_id:Some("builtin".into()), event_type:"scene.observed".into(), provider:Some(provider.name().into()), summary:analysis.summary.clone(), objects:analysis.objects.clone(), confidence:None, latency_ms:Some(latency), metadata }); tracing::info!(provider=provider.name(), latency_ms=latency, frames_analyzed=frame_count, summary=%analysis.summary, changes=?analysis.changes, activities=?analysis.activities, objects=?analysis.objects, "Vision Observation"); }, Err(error) => { metrics.failure(); recovery.begin("vision", error.clone()).await; events.publish_record(EventRecord { id:String::new(), timestamp:now_ms(), source_id:Some("builtin".into()), event_type:"vision.failed".into(), provider:Some(provider.name().into()), summary:error.clone(), objects:Vec::new(), confidence:None, latency_ms:Some(started.elapsed().as_millis() as u64), metadata:serde_json::json!({"frames_analyzed":frame_count}) }); tracing::warn!(provider=provider.name(), error=%error, frames_analyzed=frame_count, "vision observation failed"); } } }, changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } } }
             }
-        }))
+        })
     }
 }
 fn now_ms() -> u128 {

@@ -7,6 +7,7 @@ use crate::{
     metrics::Metrics,
     mjpeg::MjpegStream,
     preview::Preview,
+    recovery::{HealthMonitor, RecoveryEngine},
     runtime::RuntimeStatus,
     sources::{AddSource, SourceManagerError, VideoSourceManager},
     vision::{VisionMetrics, VisionState},
@@ -42,20 +43,30 @@ pub struct AppState {
     pub vision_metrics: VisionMetrics,
     pub mjpeg: MjpegStream,
     pub shutdown: tokio::sync::watch::Sender<bool>,
+    pub health_monitor: HealthMonitor,
+    pub recovery: RecoveryEngine,
 }
 impl AppState {
     pub fn new(
         config: Config,
         frame_buffer: FrameBuffer,
         shutdown: tokio::sync::watch::Sender<bool>,
+        shutdown_receiver: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         let events = EventBus::new(config.events.capacity);
+        let recovery = RecoveryEngine::new(events.clone());
         let mjpeg = MjpegStream::new(frame_buffer.clone());
         Self {
             config: config.clone(),
             health: Health::default(),
             metrics: Metrics::new(),
-            sources: VideoSourceManager::new(config.fps, events.clone()),
+            sources: VideoSourceManager::new(
+                config.fps,
+                events.clone(),
+                config.recovery.camera.clone(),
+                shutdown_receiver,
+                recovery.clone(),
+            ),
             events,
             authenticator: BearerAuthenticator::from_env(),
             preview: Preview::new(),
@@ -65,6 +76,8 @@ impl AppState {
             vision_metrics: VisionMetrics::default(),
             mjpeg,
             shutdown,
+            health_monitor: recovery.monitor.clone(),
+            recovery,
         }
     }
 }
@@ -74,7 +87,21 @@ pub async fn serve(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), std::io::Error> {
     let shared = Arc::new(state);
-    let app = Router::new()
+    let app = router(shared.clone());
+    let listener = tokio::net::TcpListener::bind(&shared.config.bind).await?;
+    shared.runtime.mark_http_started().await;
+    tracing::info!(address=%shared.config.bind, "HTTP server started");
+    let graceful = async move {
+        let _ = shutdown.changed().await;
+        tracing::info!("HTTP server shutting down");
+    };
+    axum::serve(listener, app)
+        .with_graceful_shutdown(graceful)
+        .await
+}
+
+pub fn router(shared: Arc<AppState>) -> Router {
+    Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/metrics", get(metrics))
@@ -96,17 +123,7 @@ pub async fn serve(
         .route("/api/v1/vision/latest", get(vision_latest))
         .route("/api/v1/streams/:source_id/mjpeg", get(mjpeg))
         .layer(middleware::from_fn_with_state(shared.clone(), require_auth))
-        .with_state(shared.clone());
-    let listener = tokio::net::TcpListener::bind(&shared.config.bind).await?;
-    shared.runtime.mark_http_started().await;
-    tracing::info!(address=%shared.config.bind, "HTTP server started");
-    let graceful = async move {
-        let _ = shutdown.changed().await;
-        tracing::info!("HTTP server shutting down");
-    };
-    axum::serve(listener, app)
-        .with_graceful_shutdown(graceful)
-        .await
+        .with_state(shared)
 }
 async fn live() -> impl IntoResponse {
     Json(json!({"status":"ok"}))
@@ -130,21 +147,35 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let vision_metrics = state.vision_metrics.prometheus();
     let event_metrics = state.events.store().prometheus().await;
     let mjpeg_metrics = state.mjpeg.metrics.prometheus();
+    let recovery_metrics = state
+        .recovery
+        .metrics
+        .prometheus(state.health_monitor.degraded_count().await);
+    let buffer_metrics = format!(
+        "sentinel_frame_buffer_size {}\nsentinel_frame_buffer_capacity {}\nsentinel_frame_buffer_utilization {}\nsentinel_frame_buffer_evictions {}\n",
+        state.frame_buffer.len(),
+        state.frame_buffer.capacity(),
+        state.frame_buffer.utilization(),
+        state.frame_buffer.evictions()
+    );
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         format!(
-            "{}{}{}{}{}",
+            "{}{}{}{}{}{}{}",
             state.metrics.prometheus(),
             source_metrics,
             vision_metrics,
             event_metrics,
-            mjpeg_metrics
+            mjpeg_metrics,
+            buffer_metrics,
+            recovery_metrics
         ),
     )
 }
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let event_store = state.events.store();
     Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity()}}),
+        json!({"version": env!("CARGO_PKG_VERSION"), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "health": state.health_monitor.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity(), "utilization": state.frame_buffer.utilization(), "evictions": state.frame_buffer.evictions()}, "events": {"length": event_store.len().await, "capacity": event_store.capacity()}}),
     )
 }
 async fn version() -> impl IntoResponse {
@@ -196,10 +227,12 @@ async fn require_auth(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> impl IntoResponse {
-    if matches!(
-        request.uri().path(),
-        "/health/live" | "/health/ready" | "/api/v1/version"
-    ) {
+    if !state.authenticator.enabled()
+        || matches!(
+            request.uri().path(),
+            "/health/live" | "/health/ready" | "/api/v1/version"
+        )
+    {
         return next.run(request).await;
     }
     let token = request

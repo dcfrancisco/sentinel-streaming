@@ -17,3 +17,8 @@ impl Preview {
         self.0.read().await.clone()
     }
 }
+impl Default for Preview {
+    fn default() -> Self {
+        Self::new()
+    }
+}

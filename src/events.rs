@@ -113,6 +113,9 @@ impl EventStore {
     pub async fn len(&self) -> usize {
         self.events.read().await.len()
     }
+    pub async fn is_empty(&self) -> bool {
+        self.len().await == 0
+    }
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -129,7 +132,7 @@ impl EventStore {
             .iter()
             .filter(|event| event.event_type.starts_with("source."))
             .count();
-        format!("sentinel_events_total {}\nsentinel_events_store_size {}\nsentinel_vision_events_total {}\nsentinel_source_events_total {}\n", total, total, vision, source)
+        format!("sentinel_events_total {}\nsentinel_events_store_size {}\nsentinel_events_store_capacity {}\nsentinel_vision_events_total {}\nsentinel_source_events_total {}\n", total, total, self.capacity, vision, source)
     }
 }
 
@@ -182,10 +185,13 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+#[allow(dead_code)]
 pub trait VisionEngine: Send + Sync {
     fn process(&self, _frame: &Frame) {}
 }
+#[allow(dead_code)]
 pub trait SceneUnderstanding: Send + Sync {}
+#[allow(dead_code)]
 pub trait EventPublisher: Send + Sync {
     fn publish(&self, _event: &str) {}
 }

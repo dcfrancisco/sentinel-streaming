@@ -11,6 +11,8 @@ pub struct Frame {
     pub data: Arc<[u8]>,
 }
 impl Frame {
+    /// Deterministic frame fixture used by hardware-independent tests.
+    #[allow(dead_code)]
     pub fn blank(sequence: u64, width: u32, height: u32) -> Self {
         Self {
             sequence,

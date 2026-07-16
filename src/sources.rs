@@ -1,7 +1,9 @@
 use crate::{
+    config::ReconnectConfig,
     errors::SourceError,
     events::{Event, EventBus},
     frame::Frame,
+    recovery::RecoveryEngine,
 };
 use async_trait::async_trait;
 use nokhwa::{
@@ -16,8 +18,9 @@ use std::{
     sync::{mpsc, Arc},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{mpsc as tokio_mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc as tokio_mpsc, watch, Mutex, RwLock};
 
+#[allow(dead_code)]
 #[async_trait(?Send)]
 pub trait VideoSource {
     fn name(&self) -> &'static str;
@@ -75,9 +78,13 @@ impl BuiltInCamera {
     }
 }
 
+#[allow(dead_code)]
 pub struct UsbCamera;
+#[allow(dead_code)]
 pub struct RtspCamera;
+#[allow(dead_code)]
 pub struct OnvifCamera;
+#[allow(dead_code)]
 pub struct VideoFile;
 
 #[async_trait]
@@ -94,6 +101,7 @@ pub enum SourceState {
     Stopping,
     Failed,
     Disconnected,
+    Reconnecting,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceInfo {
@@ -107,6 +115,7 @@ pub struct SourceInfo {
     pub uptime_seconds: u64,
     pub last_frame: Option<u128>,
     pub reconnect_count: u64,
+    pub downtime_seconds: u64,
     pub frames_received: u64,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -119,6 +128,7 @@ struct SourceEntry {
     info: SourceInfo,
     desired_running: bool,
     started_at: Option<std::time::Instant>,
+    disconnected_at: Option<std::time::Instant>,
 }
 
 struct CameraWorker {
@@ -175,9 +185,18 @@ pub struct VideoSourceManager {
     sources: Arc<RwLock<BTreeMap<String, SourceEntry>>>,
     built_in: Arc<RwLock<Option<CameraWorker>>>,
     events: EventBus,
+    reconnect: ReconnectConfig,
+    shutdown: watch::Receiver<bool>,
+    recovery: RecoveryEngine,
 }
 impl VideoSourceManager {
-    pub fn new(fps: u32, events: EventBus) -> Self {
+    pub fn new(
+        fps: u32,
+        events: EventBus,
+        reconnect: ReconnectConfig,
+        shutdown: watch::Receiver<bool>,
+        recovery: RecoveryEngine,
+    ) -> Self {
         let info = SourceInfo {
             id: "builtin".into(),
             name: "Built-in camera".into(),
@@ -188,6 +207,7 @@ impl VideoSourceManager {
             uptime_seconds: 0,
             last_frame: None,
             reconnect_count: 0,
+            downtime_seconds: 0,
             frames_received: 0,
         };
         let mut sources = BTreeMap::new();
@@ -197,6 +217,7 @@ impl VideoSourceManager {
                 info,
                 desired_running: false,
                 started_at: None,
+                disconnected_at: None,
             },
         );
         Self {
@@ -204,6 +225,9 @@ impl VideoSourceManager {
             sources: Arc::new(RwLock::new(sources)),
             built_in: Arc::new(RwLock::new(None)),
             events,
+            reconnect,
+            shutdown,
+            recovery,
         }
     }
     pub async fn list(&self) -> Vec<SourceInfo> {
@@ -211,19 +235,27 @@ impl VideoSourceManager {
             .read()
             .await
             .values()
-            .map(|entry| self.snapshot(&entry.info, entry.started_at))
+            .map(|entry| self.snapshot(&entry.info, entry.started_at, entry.disconnected_at))
             .collect()
     }
     pub async fn get(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
         let sources = self.sources.read().await;
         let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
-        Ok(self.snapshot(&entry.info, entry.started_at))
+        Ok(self.snapshot(&entry.info, entry.started_at, entry.disconnected_at))
     }
-    fn snapshot(&self, info: &SourceInfo, started_at: Option<std::time::Instant>) -> SourceInfo {
+    fn snapshot(
+        &self,
+        info: &SourceInfo,
+        started_at: Option<std::time::Instant>,
+        disconnected_at: Option<std::time::Instant>,
+    ) -> SourceInfo {
         let mut info = info.clone();
         info.uptime_seconds = started_at
             .map(|started| started.elapsed().as_secs())
             .unwrap_or(0);
+        info.downtime_seconds = disconnected_at
+            .map(|disconnected| disconnected.elapsed().as_secs())
+            .unwrap_or(info.downtime_seconds);
         info
     }
     pub async fn add(&self, request: AddSource) -> Result<SourceInfo, SourceManagerError> {
@@ -244,6 +276,7 @@ impl VideoSourceManager {
             uptime_seconds: 0,
             last_frame: None,
             reconnect_count: 0,
+            downtime_seconds: 0,
             frames_received: 0,
         };
         sources.insert(
@@ -252,6 +285,7 @@ impl VideoSourceManager {
                 info: info.clone(),
                 desired_running: false,
                 started_at: None,
+                disconnected_at: None,
             },
         );
         Ok(info)
@@ -259,6 +293,9 @@ impl VideoSourceManager {
     pub async fn start(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
         if id != "builtin" {
             return Err(SourceManagerError::Unsupported(id.into()));
+        }
+        if self.built_in.read().await.is_some() {
+            return self.get(id).await;
         }
         {
             let mut sources = self.sources.write().await;
@@ -273,18 +310,33 @@ impl VideoSourceManager {
                 let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
                 entry.info.status = SourceState::Running;
                 entry.started_at = Some(std::time::Instant::now());
+                entry.disconnected_at = None;
+                entry.info.downtime_seconds = 0;
+                let snapshot = self.snapshot(&entry.info, entry.started_at, entry.disconnected_at);
+                drop(sources);
+                self.recovery
+                    .monitor
+                    .set(
+                        "camera",
+                        crate::recovery::ComponentState::Healthy,
+                        "camera running",
+                        0,
+                    )
+                    .await;
                 self.events.publish(Event {
                     kind: "source_started".into(),
                     source_id: Some(id.into()),
                     message: "source started".into(),
                 });
-                Ok(self.snapshot(&entry.info, entry.started_at))
+                Ok(snapshot)
             }
             Err(error) => {
                 let mut sources = self.sources.write().await;
                 if let Some(entry) = sources.get_mut(id) {
                     entry.info.status = SourceState::Failed;
                 }
+                drop(sources);
+                self.recovery.failed("camera", error.to_string(), 1).await;
                 self.events.publish(Event {
                     kind: "source_failed".into(),
                     source_id: Some(id.into()),
@@ -309,12 +361,14 @@ impl VideoSourceManager {
         let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
         entry.info.status = SourceState::Stopped;
         entry.started_at = None;
+        entry.disconnected_at = None;
+        entry.info.downtime_seconds = 0;
         self.events.publish(Event {
             kind: "source_stopped".into(),
             source_id: Some(id.into()),
             message: "source stopped".into(),
         });
-        Ok(self.snapshot(&entry.info, entry.started_at))
+        Ok(self.snapshot(&entry.info, entry.started_at, entry.disconnected_at))
     }
     pub async fn restart(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
         self.stop(id).await.ok();
@@ -346,14 +400,129 @@ impl VideoSourceManager {
             .iter()
             .filter(|source| matches!(source.status, SourceState::Failed))
             .count();
-        let mut output = format!("sentinel_registered_sources {}\nsentinel_active_sources {}\nsentinel_failed_sources {}\n", list.len(), active, failed);
+        let reconnects: u64 = list.iter().map(|source| source.reconnect_count).sum();
+        let downtime: u64 = list.iter().map(|source| source.downtime_seconds).sum();
+        let mut output = format!("sentinel_registered_sources {}\nsentinel_active_sources {}\nsentinel_failed_sources {}\nsentinel_source_reconnect_attempts {}\nsentinel_source_downtime_seconds {}\n", list.len(), active, failed, reconnects, downtime);
         for source in list {
             output.push_str(&format!(
-                "sentinel_source_frames_received{{source=\"{}\"}} {}\n",
-                source.id, source.frames_received
+                "sentinel_source_frames_received{{source=\"{}\"}} {}\nsentinel_source_reconnect_count{{source=\"{}\"}} {}\nsentinel_source_downtime_seconds{{source=\"{}\"}} {}\n",
+                source.id, source.frames_received, source.id, source.reconnect_count, source.id, source.downtime_seconds
             ));
         }
         output
+    }
+}
+impl VideoSourceManager {
+    async fn reconnect_until_running(&self) -> bool {
+        if !self.reconnect.enabled {
+            return false;
+        }
+        let recovery_started = self
+            .recovery
+            .begin("camera", "camera reconnect required")
+            .await;
+        let mut delay = std::time::Duration::from_millis(self.reconnect.initial_delay_ms.max(1));
+        let maximum = std::time::Duration::from_secs(self.reconnect.max_delay_seconds.max(1));
+        let mut shutdown = self.shutdown.clone();
+        loop {
+            let desired = self
+                .sources
+                .read()
+                .await
+                .get("builtin")
+                .map(|entry| entry.desired_running)
+                .unwrap_or(false);
+            if !desired || *shutdown.borrow() {
+                return false;
+            }
+            {
+                let mut sources = self.sources.write().await;
+                if let Some(entry) = sources.get_mut("builtin") {
+                    entry.info.status = SourceState::Reconnecting;
+                    entry
+                        .disconnected_at
+                        .get_or_insert_with(std::time::Instant::now);
+                }
+            }
+            let wait = if self.reconnect.jitter {
+                let jitter = (now_ms() % (delay.as_millis().max(1) / 4 + 1)) as u64;
+                delay + std::time::Duration::from_millis(jitter)
+            } else {
+                delay
+            };
+            tracing::warn!(
+                delay_ms = wait.as_millis() as u64,
+                "retrying camera connection"
+            );
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { return false; } }
+            }
+            let fps = self.fps;
+            let result = tokio::task::spawn_blocking(move || CameraWorker::start(fps)).await;
+            match result {
+                Ok(Ok(worker)) => {
+                    *self.built_in.write().await = Some(worker);
+                    let mut sources = self.sources.write().await;
+                    if let Some(entry) = sources.get_mut("builtin") {
+                        entry.info.status = SourceState::Running;
+                        entry.started_at = Some(std::time::Instant::now());
+                        entry.info.downtime_seconds = entry
+                            .disconnected_at
+                            .map(|at| at.elapsed().as_secs())
+                            .unwrap_or(0);
+                        entry.disconnected_at = None;
+                    }
+                    drop(sources);
+                    self.recovery
+                        .recovered("camera", recovery_started, "camera reconnected")
+                        .await;
+                    self.events.publish(Event {
+                        kind: "source_restarted".into(),
+                        source_id: Some("builtin".into()),
+                        message: "source reconnected".into(),
+                    });
+                    tracing::info!("camera reconnected");
+                    return true;
+                }
+                Ok(Err(error)) => {
+                    let attempts = self
+                        .sources
+                        .write()
+                        .await
+                        .get_mut("builtin")
+                        .map(|entry| {
+                            entry.info.reconnect_count += 1;
+                            entry.info.reconnect_count
+                        })
+                        .unwrap_or(0);
+                    self.recovery
+                        .attempt_failed("camera", error.to_string(), attempts)
+                        .await;
+                    tracing::warn!(error=%error, "camera reconnect attempt failed");
+                }
+                Err(error) => {
+                    let attempts = self
+                        .sources
+                        .write()
+                        .await
+                        .get_mut("builtin")
+                        .map(|entry| {
+                            entry.info.reconnect_count += 1;
+                            entry.info.reconnect_count
+                        })
+                        .unwrap_or(0);
+                    self.recovery
+                        .attempt_failed("camera", error.to_string(), attempts)
+                        .await;
+                    tracing::warn!(error=%error, "camera reconnect task failed");
+                }
+            }
+            if !self.reconnect.retry_forever {
+                return false;
+            }
+            delay = std::cmp::min(delay.saturating_mul(2), maximum);
+        }
     }
 }
 #[async_trait]
@@ -406,8 +575,11 @@ impl FrameProvider for VideoSourceManager {
                     let reconnect = sources
                         .get_mut("builtin")
                         .map(|entry| {
-                            entry.info.status = SourceState::Failed;
+                            entry.info.status = SourceState::Disconnected;
                             entry.info.reconnect_count += 1;
+                            entry
+                                .disconnected_at
+                                .get_or_insert_with(std::time::Instant::now);
                             entry.desired_running
                         })
                         .unwrap_or(false);
@@ -416,25 +588,12 @@ impl FrameProvider for VideoSourceManager {
                         worker.stop();
                     }
                     self.events.publish(Event {
-                        kind: "source_failed".into(),
+                        kind: "source_disconnected".into(),
                         source_id: Some("builtin".into()),
                         message: error.to_string(),
                     });
                     if reconnect {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        if let Ok(worker) = CameraWorker::start(self.fps) {
-                            *self.built_in.write().await = Some(worker);
-                            let mut sources = self.sources.write().await;
-                            if let Some(entry) = sources.get_mut("builtin") {
-                                entry.info.status = SourceState::Running;
-                                entry.started_at = Some(std::time::Instant::now());
-                            }
-                            self.events.publish(Event {
-                                kind: "source_restarted".into(),
-                                source_id: Some("builtin".into()),
-                                message: "source reconnected".into(),
-                            });
-                        }
+                        self.reconnect_until_running().await;
                     }
                 }
             }

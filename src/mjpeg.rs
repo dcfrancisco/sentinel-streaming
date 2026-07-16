@@ -36,7 +36,9 @@ impl MjpegMetrics {
     pub fn prometheus(&self) -> String {
         let frames = self.frames.load(Ordering::Relaxed);
         let fps = frames as f64 / self.started.elapsed().as_secs_f64().max(1.0);
-        format!("sentinel_mjpeg_connected_viewers {}\nsentinel_mjpeg_frames_streamed {}\nsentinel_mjpeg_bytes_transmitted {}\nsentinel_mjpeg_stream_errors {}\nsentinel_mjpeg_average_fps {}\n", self.viewer_count(), frames, self.bytes.load(Ordering::Relaxed), self.errors.load(Ordering::Relaxed), fps)
+        let bytes = self.bytes.load(Ordering::Relaxed);
+        let bytes_per_second = bytes as f64 / self.started.elapsed().as_secs_f64().max(1.0);
+        format!("sentinel_mjpeg_connected_viewers {}\nsentinel_mjpeg_frames_streamed {}\nsentinel_mjpeg_bytes_transmitted {}\nsentinel_mjpeg_bytes_per_second {}\nsentinel_mjpeg_stream_errors {}\nsentinel_mjpeg_average_fps {}\n", self.viewer_count(), frames, bytes, bytes_per_second, self.errors.load(Ordering::Relaxed), fps)
     }
 }
 
