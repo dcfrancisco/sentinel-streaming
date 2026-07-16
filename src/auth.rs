@@ -42,7 +42,7 @@ fn credential(profile: &str) -> Result<keyring::Entry, keyring::Error> {
     keyring::Entry::new("sentinel-streaming", profile)
 }
 
-pub fn login(profile: &str, server: &str, token: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn login(profile: &str, server: &str, token: &str) -> anyhow::Result<()> {
     let mut data = load()?;
     data.profiles.insert(
         profile.into(),
@@ -68,7 +68,7 @@ pub fn add_profile(profile: &str, server: &str) -> io::Result<()> {
     }
     save(&data)
 }
-pub fn logout(profile: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn logout(profile: Option<&str>) -> anyhow::Result<()> {
     let mut data = load()?;
     let name = profile.map(str::to_owned).or(data.current.clone());
     if let Some(name) = name {
@@ -93,14 +93,16 @@ pub fn use_profile(profile: &str) -> io::Result<()> {
     data.current = Some(profile.into());
     save(&data)
 }
-pub fn current() -> Result<(String, Profile, String), Box<dyn std::error::Error>> {
+pub fn current() -> anyhow::Result<(String, Profile, String)> {
     let data = load()?;
-    let name = data.current.ok_or("no active profile; run auth login")?;
+    let name = data
+        .current
+        .ok_or_else(|| anyhow::anyhow!("no active profile; run auth login"))?;
     let profile = data
         .profiles
         .get(&name)
         .cloned()
-        .ok_or("active profile is missing")?;
+        .ok_or_else(|| anyhow::anyhow!("active profile is missing"))?;
     let token = credential(&name)?.get_password()?;
     Ok((name, profile, token))
 }

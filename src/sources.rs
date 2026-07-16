@@ -13,13 +13,13 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::Arc,
+    sync::{mpsc, Arc},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc as tokio_mpsc, Mutex, RwLock};
 
-#[async_trait]
-pub trait VideoSource: Send {
+#[async_trait(?Send)]
+pub trait VideoSource {
     fn name(&self) -> &'static str;
     async fn next_frame(&mut self) -> Result<Frame, SourceError>;
 }
@@ -43,12 +43,17 @@ impl BuiltInCamera {
         })
     }
 }
-#[async_trait]
+#[async_trait(?Send)]
 impl VideoSource for BuiltInCamera {
     fn name(&self) -> &'static str {
         "built-in-camera"
     }
     async fn next_frame(&mut self) -> Result<Frame, SourceError> {
+        self.next_frame_sync()
+    }
+}
+impl BuiltInCamera {
+    fn next_frame_sync(&mut self) -> Result<Frame, SourceError> {
         let frame = self
             .camera
             .frame()
@@ -111,6 +116,37 @@ struct SourceEntry {
     desired_running: bool,
     started_at: Option<std::time::Instant>,
 }
+
+struct CameraWorker {
+    frames: Arc<Mutex<tokio_mpsc::Receiver<Frame>>>,
+    stop: Option<mpsc::Sender<()>>,
+}
+impl CameraWorker {
+    fn start(fps: u32) -> Result<Self, SourceManagerError> {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = tokio_mpsc::channel(2);
+        std::thread::Builder::new().name("sentinel-camera".into()).spawn(move || {
+            let mut camera = match BuiltInCamera::new(fps) { Ok(camera) => { let _ = ready_tx.send(Ok(())); camera }, Err(error) => { let _ = ready_tx.send(Err(error.to_string())); return; } };
+            loop { if stop_rx.try_recv().is_ok() { break; } match camera.next_frame_sync() { Ok(frame) => { if frame_tx.blocking_send(frame).is_err() { break; } }, Err(error) => { tracing::warn!(error=%error, "camera worker stopped after capture error"); break; } } }
+        }).map_err(|error| SourceManagerError::Camera(error.to_string()))?;
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(Self {
+                frames: Arc::new(Mutex::new(frame_rx)),
+                stop: Some(stop_tx),
+            }),
+            Ok(Err(error)) => Err(SourceManagerError::Camera(error)),
+            Err(error) => Err(SourceManagerError::Camera(format!(
+                "camera startup timed out: {error}"
+            ))),
+        }
+    }
+    fn stop(mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+    }
+}
 #[derive(Debug)]
 pub enum SourceManagerError {
     NotFound,
@@ -133,7 +169,7 @@ impl fmt::Display for SourceManagerError {
 pub struct VideoSourceManager {
     fps: u32,
     sources: Arc<RwLock<BTreeMap<String, SourceEntry>>>,
-    built_in: Arc<Mutex<Option<BuiltInCamera>>>,
+    built_in: Arc<RwLock<Option<CameraWorker>>>,
     events: EventBus,
 }
 impl VideoSourceManager {
@@ -162,7 +198,7 @@ impl VideoSourceManager {
         Self {
             fps,
             sources: Arc::new(RwLock::new(sources)),
-            built_in: Arc::new(Mutex::new(None)),
+            built_in: Arc::new(RwLock::new(None)),
             events,
         }
     }
@@ -226,9 +262,9 @@ impl VideoSourceManager {
             entry.desired_running = true;
             entry.info.status = SourceState::Starting;
         }
-        match BuiltInCamera::new(self.fps) {
-            Ok(camera) => {
-                *self.built_in.lock().await = Some(camera);
+        match CameraWorker::start(self.fps) {
+            Ok(worker) => {
+                *self.built_in.write().await = Some(worker);
                 let mut sources = self.sources.write().await;
                 let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
                 entry.info.status = SourceState::Running;
@@ -261,7 +297,9 @@ impl VideoSourceManager {
         entry.desired_running = false;
         drop(sources);
         if id == "builtin" {
-            self.built_in.lock().await.take();
+            if let Some(worker) = self.built_in.write().await.take() {
+                worker.stop();
+            }
         }
         let mut sources = self.sources.write().await;
         let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
@@ -327,12 +365,20 @@ impl FrameProvider for VideoSourceManager {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             }
-            let result = {
-                let mut camera = self.built_in.lock().await;
-                match camera.as_mut() {
-                    Some(camera) => camera.next_frame().await,
-                    None => Err(SourceError("camera is not open".into())),
-                }
+            let receiver = self
+                .built_in
+                .read()
+                .await
+                .as_ref()
+                .map(|worker| worker.frames.clone());
+            let result = match receiver {
+                Some(receiver) => receiver
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or_else(|| SourceError("camera worker stopped".into())),
+                None => Err(SourceError("camera is not open".into())),
             };
             match result {
                 Ok(frame) => {
@@ -362,7 +408,9 @@ impl FrameProvider for VideoSourceManager {
                         })
                         .unwrap_or(false);
                     drop(sources);
-                    self.built_in.lock().await.take();
+                    if let Some(worker) = self.built_in.write().await.take() {
+                        worker.stop();
+                    }
                     self.events.publish(Event {
                         kind: "source_failed".into(),
                         source_id: Some("builtin".into()),
@@ -370,8 +418,8 @@ impl FrameProvider for VideoSourceManager {
                     });
                     if reconnect {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        if let Ok(camera) = BuiltInCamera::new(self.fps) {
-                            *self.built_in.lock().await = Some(camera);
+                        if let Ok(worker) = CameraWorker::start(self.fps) {
+                            *self.built_in.write().await = Some(worker);
                             let mut sources = self.sources.write().await;
                             if let Some(entry) = sources.get_mut("builtin") {
                                 entry.info.status = SourceState::Running;

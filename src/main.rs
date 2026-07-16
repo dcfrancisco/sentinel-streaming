@@ -18,7 +18,7 @@ mod stages;
 mod vision;
 
 use clap::Parser;
-use cli::{AuthCommand, Cli, Command, ConfigCommand, ProfileCommand, SourceCommand};
+use cli::{Cli, Command, ConfigCommand, SourceCommand};
 use config::Config;
 use frame_buffer::FrameBuffer;
 use pipeline::Pipeline;

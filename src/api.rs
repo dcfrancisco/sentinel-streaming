@@ -45,6 +45,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config, frame_buffer: FrameBuffer) -> Self {
         let events = EventBus::new(config.events.capacity);
+        let mjpeg = MjpegStream::new(frame_buffer.clone());
         Self {
             config: config.clone(),
             health: Health::default(),
@@ -57,7 +58,7 @@ impl AppState {
             frame_buffer,
             vision: VisionState::default(),
             vision_metrics: VisionMetrics::default(),
-            mjpeg: MjpegStream::new(frame_buffer.clone()),
+            mjpeg,
         }
     }
 }
@@ -88,7 +89,7 @@ pub async fn serve(
         .route("/api/v1/vision/latest", get(vision_latest))
         .route("/api/v1/streams/:source_id/mjpeg", get(mjpeg))
         .layer(middleware::from_fn_with_state(shared.clone(), require_auth))
-        .with_state(shared);
+        .with_state(shared.clone());
     let listener = tokio::net::TcpListener::bind(&shared.config.bind).await?;
     shared.runtime.mark_http_started().await;
     tracing::info!(address=%shared.config.bind, "HTTP server started");

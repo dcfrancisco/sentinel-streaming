@@ -99,7 +99,7 @@ pub async fn request(
     method: reqwest::Method,
     endpoint: &str,
     body: Option<serde_json::Value>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let mut request = client.request(method, endpoint);
     if let Ok((_, _, token)) = crate::auth::current() {
@@ -112,12 +112,12 @@ pub async fn request(
     let status = response.status();
     let text = response.text().await?;
     if !status.is_success() {
-        return Err(format!("request failed ({status}): {text}").into());
+        return Err(anyhow::anyhow!("request failed ({status}): {text}"));
     }
     println!("{text}");
     Ok(())
 }
-pub async fn status(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn status(endpoint: &str) -> anyhow::Result<()> {
     request(reqwest::Method::GET, endpoint, None).await
 }
 pub fn server_base() -> String {
@@ -126,7 +126,7 @@ pub fn server_base() -> String {
         .unwrap_or_else(|_| "http://127.0.0.1:8080".into())
 }
 
-pub async fn auth(command: AuthCommand) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn auth(command: AuthCommand) -> anyhow::Result<()> {
     match command {
         AuthCommand::Login { profile, server } => {
             let token = rpassword::prompt_password("API token: ")?;
@@ -157,7 +157,7 @@ pub async fn auth(command: AuthCommand) -> Result<(), Box<dyn std::error::Error>
     }
     Ok(())
 }
-pub fn profile(command: ProfileCommand) -> Result<(), Box<dyn std::error::Error>> {
+pub fn profile(command: ProfileCommand) -> anyhow::Result<()> {
     match command {
         ProfileCommand::List => {
             let (current, profiles) = crate::auth::list()?;
