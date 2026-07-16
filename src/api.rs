@@ -1,7 +1,7 @@
 use crate::{
     auth::{Authenticator, BearerAuthenticator},
     config::Config,
-    events::EventBus,
+    events::{Event, EventBus},
     frame_buffer::FrameBuffer,
     health::Health,
     metrics::Metrics,
@@ -41,7 +41,7 @@ pub struct AppState {
 }
 impl AppState {
     pub fn new(config: Config, frame_buffer: FrameBuffer) -> Self {
-        let events = EventBus::new();
+        let events = EventBus::new(config.events.capacity);
         Self {
             config: config.clone(),
             health: Health::default(),
@@ -75,7 +75,10 @@ pub async fn serve(
         .route("/api/v1/sources/:id/stop", post(stop_source))
         .route("/api/v1/sources/:id/restart", post(restart_source))
         .route("/api/v1/config", get(show_config))
-        .route("/api/v1/events", get(events))
+        .route("/api/v1/events", get(list_events))
+        .route("/api/v1/events/latest", get(latest_event))
+        .route("/api/v1/events/:id", get(get_event))
+        .route("/api/v1/events/stream", get(event_stream))
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/preview", get(preview))
         .route("/api/v1/vision/latest", get(vision_latest))
@@ -112,13 +115,15 @@ async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let source_metrics = state.sources.prometheus().await;
     let vision_metrics = state.vision_metrics.prometheus();
+    let event_metrics = state.events.store().prometheus().await;
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
         format!(
-            "{}{}{}",
+            "{}{}{}{}",
             state.metrics.prometheus(),
             source_metrics,
-            vision_metrics
+            vision_metrics,
+            event_metrics
         ),
     )
 }
@@ -247,7 +252,25 @@ async fn remove_source(
 async fn show_config(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!(_state.config))
 }
-async fn events(
+async fn list_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(state.events.store().recent(100).await)
+}
+async fn latest_event(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.events.store().latest().await {
+        Some(event) => (StatusCode::OK, Json(event)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+async fn get_event(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.events.store().get(&id).await {
+        Some(event) => (StatusCode::OK, Json(event)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+async fn event_stream(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
     let stream = BroadcastStream::new(state.events.subscribe()).filter_map(|item| {

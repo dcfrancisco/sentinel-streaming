@@ -76,6 +76,7 @@ async fn serve(bind: String) -> anyhow::Result<()> {
             state.vision_metrics.clone(),
             config.vision.interval_seconds,
             shutdown_tx.subscribe(),
+            state.events.clone(),
         )
     } else {
         tracing::info!("vision disabled by configuration");

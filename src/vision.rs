@@ -1,4 +1,8 @@
-use crate::{frame::Frame, frame_buffer::FrameBuffer};
+use crate::{
+    events::{EventBus, EventRecord},
+    frame::Frame,
+    frame_buffer::FrameBuffer,
+};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -141,6 +145,7 @@ impl VisionScheduler {
         metrics: VisionMetrics,
         interval_seconds: u64,
         shutdown: watch::Receiver<bool>,
+        events: EventBus,
     ) -> Option<tokio::task::JoinHandle<()>> {
         let provider = OpenAiVisionProvider::from_env()?;
         let provider: Arc<dyn VisionProvider> = Arc::new(provider);
@@ -149,7 +154,7 @@ impl VisionScheduler {
             let mut shutdown = shutdown;
             let mut ticker = tokio::time::interval(interval);
             loop {
-                tokio::select! { _ = ticker.tick() => { let Some(frame) = buffer.latest() else { continue; }; metrics.request(); let started = Instant::now(); match provider.analyze(frame).await { Ok(analysis) => { let latency = started.elapsed().as_millis() as u64; let timestamp = now_ms(); metrics.success(latency, timestamp); state.set(LatestAnalysis { timestamp, analysis: analysis.clone(), provider: provider.name().into(), latency_ms: latency }).await; tracing::info!(provider=provider.name(), latency_ms=latency, summary=%analysis.summary, objects=?analysis.objects, "Vision Analysis"); }, Err(error) => { metrics.failure(); tracing::warn!(provider=provider.name(), error=%error, "vision analysis failed"); } } }, changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } } }
+                tokio::select! { _ = ticker.tick() => { let Some(frame) = buffer.latest() else { continue; }; metrics.request(); let started = Instant::now(); match provider.analyze(frame).await { Ok(analysis) => { let latency = started.elapsed().as_millis() as u64; let timestamp = now_ms(); metrics.success(latency, timestamp); state.set(LatestAnalysis { timestamp, analysis: analysis.clone(), provider: provider.name().into(), latency_ms: latency }).await; events.publish_record(EventRecord { id: String::new(), timestamp, source_id: Some("builtin".into()), event_type: "vision.completed".into(), provider: Some(provider.name().into()), summary: analysis.summary.clone(), objects: analysis.objects.clone(), confidence: None, latency_ms: Some(latency), metadata: serde_json::json!({}) }); events.publish_record(EventRecord { id: String::new(), timestamp, source_id: Some("builtin".into()), event_type: "scene.observed".into(), provider: Some(provider.name().into()), summary: analysis.summary.clone(), objects: analysis.objects.clone(), confidence: None, latency_ms: Some(latency), metadata: serde_json::json!({}) }); tracing::info!(provider=provider.name(), latency_ms=latency, summary=%analysis.summary, objects=?analysis.objects, "Vision Analysis"); }, Err(error) => { metrics.failure(); events.publish_record(EventRecord { id: String::new(), timestamp: now_ms(), source_id: Some("builtin".into()), event_type: "vision.failed".into(), provider: Some(provider.name().into()), summary: error.clone(), objects: Vec::new(), confidence: None, latency_ms: Some(started.elapsed().as_millis() as u64), metadata: serde_json::json!({}) }); tracing::warn!(provider=provider.name(), error=%error, "vision analysis failed"); } } }, changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } } }
             }
         }))
     }

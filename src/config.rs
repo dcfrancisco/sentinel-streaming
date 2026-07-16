@@ -7,6 +7,16 @@ pub struct Config {
     pub pipeline: PipelineConfig,
     pub buffer: BufferConfig,
     pub vision: VisionConfig,
+    pub events: EventsConfig,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct EventsConfig {
+    pub capacity: usize,
+}
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self { capacity: 1000 }
+    }
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct VisionConfig {
@@ -61,6 +71,7 @@ impl Default for Config {
             pipeline: PipelineConfig::default(),
             buffer: BufferConfig::default(),
             vision: VisionConfig::default(),
+            events: EventsConfig::default(),
         }
     }
 }
