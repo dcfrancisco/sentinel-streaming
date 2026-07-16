@@ -32,7 +32,11 @@ impl BuiltInCamera {
     pub fn new(_fps: u32) -> Result<Self, SourceError> {
         let requested =
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
-        let mut camera = Camera::new(CameraIndex::Index(0), requested)
+        let camera_index: u32 = std::env::var("SENTINEL_CAMERA_INDEX")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let mut camera = Camera::new(CameraIndex::Index(camera_index), requested)
             .map_err(|e| SourceError(e.to_string()))?;
         camera
             .open_stream()
