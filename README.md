@@ -1,154 +1,41 @@
 # Sentinel Streaming
 
-**Sentinel Streaming** is a high-performance, camera-first streaming platform written in Rust.
+Sentinel Streaming is a headless, extensible Rust streaming engine for the Sentinel Platform. It acquires frames through `VideoSource`, sends every frame through one `Pipeline`, and delivers them to `FrameOutput` extension points.
 
-It provides a unified way to ingest, stream, record, and expose video from multiple camera sources through a simple API. Designed for AI, surveillance, robotics, and edge computing, Sentinel Streaming serves as the media foundation for the Sentinel ecosystem while remaining useful as a standalone open-source project.
+## Administration
 
-## Goals
+Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` and exposes:
 
-- Camera-first architecture
-- High-performance Rust implementation
-- AI-ready frame access
-- Cross-platform
-- Edge-friendly
-- Simple REST API
-- Extensible through SDKs
+- `GET /health/live`
+- `GET /health/ready`
+- `GET /api/v1/status`
+- `GET /api/v1/version`
+- `GET /api/v1/sources`
+- `POST /api/v1/sources`
+- `POST /api/v1/sources/{id}/start`
+- `POST /api/v1/sources/{id}/stop`
+- `DELETE /api/v1/sources/{id}`
+- `GET /api/v1/config`
+- `GET /metrics`
+- `GET /api/v1/events` (Server-Sent Events)
+- `GET /api/v1/preview` (latest JPEG camera frame)
 
----
+The CLI is API-backed and includes `serve`, `status`, `version`, `source list`, `source add`, `source remove`, `source start`, `source stop`, `config show`, and `metrics`.
 
-# Features
+## MVP architecture
 
-## Camera Support
+The built-in source uses the native camera backend provided by Nokhwa and captures device index `0`. USB, RTSP, ONVIF, and video-file adapters remain isolated extension points for later milestones. The latest captured frame is JPEG-encoded by a pipeline output and exposed at `/api/v1/preview` for browser inspection.
 
-- [ ] Built-in camera
-- [ ] USB camera
-- [ ] RTSP cameras
-- [ ] ONVIF discovery
-- [ ] IP/Wi-Fi cameras
-- [ ] Video file playback
-- [ ] Multi-camera support
+AI is not implemented in this milestone. Placeholder interfaces exist for `VisionEngine`, `SceneUnderstanding`, and `EventPublisher`.
 
-## Streaming
+## Build
 
-- [ ] Live video streaming
-- [ ] Browser viewer
-- [ ] MJPEG streaming
-- [ ] HLS streaming
-- [ ] WebRTC
-- [ ] Adaptive streaming
-
-## Recording
-
-- [ ] Continuous recording
-- [ ] Event recording
-- [ ] Snapshot capture
-- [ ] Video retention policies
-- [ ] Video export
-
-## AI Integration
-
-- [ ] Frame access API
-- [ ] Frame subscription
-- [ ] Motion event publishing
-- [ ] Metadata streaming
-- [ ] Zero-copy frame pipeline
-
-## API
-
-- [ ] REST API
-- [ ] WebSocket events
-- [ ] OpenAPI documentation
-- [ ] Authentication
-- [ ] Health endpoints
-- [ ] Metrics
-
-## SDKs
-
-- [ ] Rust
-- [ ] Java
-- [ ] Python
-- [ ] Node.js
-
----
-
-# Development Priority
-
-## Phase 1 — MVP
-
-- [ ] Built-in camera support
-- [ ] Live browser streaming
-- [ ] Start/Stop camera
-- [ ] Snapshot endpoint
-- [ ] Stream status API
-- [ ] Basic health monitoring
-
-## Phase 2 — Camera Platform
-
-- [ ] RTSP support
-- [ ] USB camera support
-- [ ] Multiple cameras
-- [ ] Recording
-- [ ] Camera management
-
-## Phase 3 — AI Platform
-
-- [ ] Frame subscription API
-- [ ] Metadata pipeline
-- [ ] Motion events
-- [ ] AI integration interfaces
-
-## Phase 4 — Enterprise
-
-- [ ] ONVIF discovery
-- [ ] Authentication
-- [ ] Authorization
-- [ ] WebRTC
-- [ ] Horizontal scaling
-- [ ] High availability
-- [ ] Distributed streaming
-
----
-
-# Out of Scope
-
-Sentinel Streaming intentionally does **not** implement:
-
-- Intrusion detection
-- Object detection
-- Face recognition
-- Security rules
-- Alerting
-- Home automation
-- Traffic analytics
-
-These capabilities belong to products built on top of Sentinel Streaming.
-
----
-
-# Architecture
-
-```
-Camera Sources
-        │
-        ▼
-Camera Adapters
-        │
-        ▼
-Streaming Pipeline
-        │
- ┌──────┼────────┐
- ▼      ▼        ▼
-Live  Recording  Snapshots
- │
- ▼
-REST / WebSocket APIs
- │
- ▼
-Applications & AI
+```bash
+cargo fmt --all
+cargo test
+cargo run -- version
 ```
 
----
-
-# License
+## License
 
 Apache 2.0
