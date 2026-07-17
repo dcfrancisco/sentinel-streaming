@@ -21,6 +21,7 @@ The current implementation provides:
 
 - A single headless `serve` runtime.
 - A built-in camera source through Nokhwa.
+- Synthetic, image-sequence, and RTSP/TCP source adapters through the same boundary.
 - A manager-owned source lifecycle.
 - A single processing pipeline for captured frames.
 - A bounded in-memory `FrameBuffer`.

@@ -68,6 +68,14 @@
 
 Container decoding such as MP4 remains a follow-up backend decision; it must be
 added behind `VideoSource` without changing the pipeline or consumers.
+
+### Milestone 12 — RTSP source
+
+- RTSP/TCP ingestion through the manager-owned source boundary.
+- FFmpeg-backed H.264 decode to RGB frames.
+- Environment-backed credentials and reconnect lifecycle.
+- Local MediaMTX/FFmpeg validation remains an operator test profile because the
+  binaries are not required to compile or run synthetic tests.
 - Hardware-independent integration tests for REST, MJPEG, events, and mock Vision.
 - Synthetic endurance command with machine-readable JSON reports.
 
@@ -110,9 +118,8 @@ multi-process deployments.
 ### Sources
 
 - USB camera adapter.
-- RTSP camera adapter.
 - ONVIF discovery and control.
-- Video-file source.
+- MP4/MOV/MKV container decoding behind `VideoFileSource`.
 
 ### Processing and storage
 

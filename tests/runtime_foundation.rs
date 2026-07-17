@@ -7,7 +7,7 @@ use sentinel_streaming::{
     frame::Frame,
     frame_buffer::FrameBuffer,
     mjpeg::MjpegStream,
-    sources::{AddSource, SourceOptions, SyntheticSource, VideoFileSource, VideoSourceManager},
+    sources::{AddSource, ImageSequenceSource, SourceOptions, SyntheticSource, VideoSourceManager},
     vision::{
         FrameSelector, SceneAnalysis, VisionJob, VisionMetrics, VisionProvider, VisionScheduler,
         VisionState,
@@ -140,7 +140,7 @@ fn video_file_source_loops_image_frames() {
     let path = std::env::temp_dir().join(format!("sentinel-frame-{}.jpg", std::process::id()));
     let image = image::RgbImage::from_pixel(4, 3, image::Rgb([12, 34, 56]));
     image.save(&path).unwrap();
-    let mut source = VideoFileSource::open(&path, true, 5).unwrap();
+    let mut source = ImageSequenceSource::open(&path, true, 5).unwrap();
     assert_eq!(source.next_frame_sync().unwrap().width, 4);
     assert_eq!(source.next_frame_sync().unwrap().sequence, 1);
     std::fs::remove_file(path).unwrap();

@@ -9,36 +9,20 @@ outside this repository.
 
 ## System flow
 
-```text
-                   Administration clients
-                 CLI / REST / automation
-                            │
-                            ▼
-                       HTTP API
-                            │
-                 ┌──────────┴──────────┐
-                 │                     │
-                 ▼                     ▼
-          Runtime/AppState        Operational APIs
-                 │          health, metrics, events
-                 │
-                 ▼
-          VideoSourceManager
-                 │
-                 ▼
-          FrameProvider
-                 │
-                 ▼
-          Processing Pipeline
-                 │
-                 ▼
-             FrameBuffer
-          ┌──────┼────────┬─────────┐
-          ▼      ▼        ▼         ▼
-       Preview MJPEG    Vision    Future stages
-                         │
-                         ▼
-                   Event Engine
+```mermaid
+flowchart TD
+    Clients["Administration clients<br/>CLI / REST / automation"] --> API["HTTP API"]
+    API --> State["Runtime / AppState"]
+    API --> Ops["Operational APIs<br/>health, metrics, events"]
+    State --> Manager["VideoSourceManager"]
+    Manager --> Provider["FrameProvider"]
+    Provider --> Pipeline["Processing Pipeline"]
+    Pipeline --> Buffer["FrameBuffer"]
+    Buffer --> Preview["Preview"]
+    Buffer --> MJPEG["MJPEG"]
+    Buffer --> Vision["Vision"]
+    Buffer --> Future["Future stages"]
+    Vision --> Events["Event Engine"]
 ```
 
 The `HealthMonitor` and `RecoveryEngine` observe these runtime boundaries and
@@ -73,8 +57,8 @@ consistent.
 ### Video source boundary
 
 `VideoSourceManager` is the only owner of source registration and lifecycle.
-Built-in camera, synthetic, and image-sequence video-file adapters are functional.
-USB, RTSP, ONVIF, and container decoding remain extension points. Every adapter
+Built-in camera, synthetic, image-sequence, and RTSP adapters are functional.
+USB, ONVIF, and container decoding remain extension points. Every adapter
 emits `Frame` values through the same manager-owned `FrameProvider`, so pipeline,
 buffer, MJPEG, Vision, and event consumers do not branch on source type.
 

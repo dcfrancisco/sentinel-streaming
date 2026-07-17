@@ -97,8 +97,11 @@ pub enum ProfileCommand {
 pub enum SourceCommand {
     List,
     Add {
-        id: String,
-        #[arg(long, default_value = "built-in-camera")]
+        #[arg(required = false)]
+        id: Option<String>,
+        #[arg(long = "id")]
+        id_flag: Option<String>,
+        #[arg(long, default_value = "built-in-camera", alias = "type")]
         kind: String,
         #[arg(long)]
         path: Option<String>,
@@ -108,6 +111,14 @@ pub enum SourceCommand {
         height: Option<u32>,
         #[arg(long)]
         fps: Option<u32>,
+        #[arg(long)]
+        uri: Option<String>,
+        #[arg(long)]
+        transport: Option<String>,
+        #[arg(long)]
+        username_env: Option<String>,
+        #[arg(long)]
+        password_env: Option<String>,
         #[arg(long, default_value_t = true)]
         loop_playback: bool,
     },

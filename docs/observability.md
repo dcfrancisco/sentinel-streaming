@@ -53,18 +53,13 @@ must be bounded; camera IDs and event types must not allow unbounded cardinality
 The architecture is intended to support OpenTelemetry distributed tracing across
 the pipeline:
 
-```text
-Camera
-    ↓
-Frame Capture
-    ↓
-Frame Buffer
-    ↓
-Vision
-    ↓
-Event Generation
-    ↓
-Future Consumers
+```mermaid
+flowchart TD
+    Camera --> Capture["Frame Capture"]
+    Capture --> Buffer["Frame Buffer"]
+    Buffer --> Vision
+    Vision --> Events["Event Generation"]
+    Events --> Consumers["Future Consumers"]
 ```
 
 OpenTelemetry exporters and remote span propagation are planned. The current

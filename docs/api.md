@@ -85,3 +85,24 @@ sentinel-streaming profile list|use|add
 
 The CLI uses the API for runtime operations. Source lifecycle and shutdown
 logic are not duplicated inside the CLI.
+
+RTSP sources use `kind: rtsp` with `uri`, optional `transport: tcp`, and
+optional environment-backed credential references:
+
+```json
+{
+  "id": "front-gate",
+  "kind": "rtsp",
+  "uri": "rtsp://camera-host/stream",
+  "transport": "tcp",
+  "credentials": {
+    "username_env": "FRONT_GATE_USERNAME",
+    "password_env": "FRONT_GATE_PASSWORD"
+  }
+}
+```
+
+Credentials are resolved only when the worker starts and are never included in
+source status, metrics, or logs. The RTSP adapter currently uses an FFmpeg
+process configured through `SENTINEL_FFMPEG` (default: `ffmpeg`) and emits raw
+RGB frames into the existing pipeline.

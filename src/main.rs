@@ -175,11 +175,27 @@ async fn source_command(command: SourceCommand) -> anyhow::Result<()> {
     let base = format!("{}/api/v1/sources", cli::server_base());
     match command {
         SourceCommand::List => cli::request(reqwest::Method::GET, &base, None).await?,
-        SourceCommand::Add { id, kind, path, width, height, fps, loop_playback } => {
+        SourceCommand::Add {
+            id,
+            id_flag,
+            kind,
+            path,
+            width,
+            height,
+            fps,
+            loop_playback,
+            uri,
+            transport,
+            username_env,
+            password_env,
+        } => {
+            let id = id_flag
+                .or(id)
+                .ok_or_else(|| anyhow::anyhow!("source add requires <id> or --id"))?;
             cli::request(
                 reqwest::Method::POST,
                 &base,
-                Some(serde_json::json!({"id": id, "kind": kind, "path": path, "width": width, "height": height, "fps": fps, "loop": loop_playback})),
+                Some(serde_json::json!({"id": id, "kind": kind, "path": path, "width": width, "height": height, "fps": fps, "loop": loop_playback, "uri": uri, "transport": transport, "credentials": {"username_env": username_env, "password_env": password_env}})),
             )
             .await?
         }
