@@ -73,8 +73,10 @@ consistent.
 ### Video source boundary
 
 `VideoSourceManager` is the only owner of source registration and lifecycle.
-The built-in source is currently the only functional adapter. USB, RTSP, ONVIF,
-and video-file types are extension points.
+Built-in camera, synthetic, and image-sequence video-file adapters are functional.
+USB, RTSP, ONVIF, and container decoding remain extension points. Every adapter
+emits `Frame` values through the same manager-owned `FrameProvider`, so pipeline,
+buffer, MJPEG, Vision, and event consumers do not branch on source type.
 
 The macOS Nokhwa camera backend is not `Send`. It is therefore constructed and
 used on a dedicated `sentinel-camera` OS thread. Frames cross into the async

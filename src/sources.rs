@@ -14,7 +14,8 @@ use nokhwa::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fmt,
+    fmt, fs,
+    path::PathBuf,
     sync::{mpsc, Arc},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -84,8 +85,145 @@ pub struct UsbCamera;
 pub struct RtspCamera;
 #[allow(dead_code)]
 pub struct OnvifCamera;
-#[allow(dead_code)]
-pub struct VideoFile;
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SourceOptions {
+    pub path: Option<String>,
+    #[serde(rename = "loop")]
+    pub loop_playback: Option<bool>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fps: Option<u32>,
+}
+
+pub struct SyntheticSource {
+    width: u32,
+    height: u32,
+    fps: u32,
+    sequence: u64,
+}
+impl SyntheticSource {
+    pub fn new(width: u32, height: u32, fps: u32) -> Self {
+        Self {
+            width: width.max(1),
+            height: height.max(1),
+            fps: fps.max(1),
+            sequence: 0,
+        }
+    }
+    pub fn fps(&self) -> u32 {
+        self.fps
+    }
+    pub fn next_frame_sync(&mut self) -> Frame {
+        self.sequence += 1;
+        let mut data = vec![0u8; (self.width * self.height * 3) as usize];
+        let x_offset = (self.sequence as u32 * 8) % self.width;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let index = ((y * self.width + x) * 3) as usize;
+                data[index] = ((x * 255) / self.width) as u8;
+                data[index + 1] = ((y * 255) / self.height) as u8;
+                data[index + 2] = 32;
+                if x >= x_offset
+                    && x < x_offset + self.width.min(80)
+                    && y >= self.height / 3
+                    && y < self.height * 2 / 3
+                {
+                    data[index] = 255;
+                    data[index + 1] = 255;
+                    data[index + 2] = 255;
+                }
+            }
+        }
+        Frame::from_rgb(self.sequence, self.width, self.height, data)
+    }
+}
+#[async_trait(?Send)]
+impl VideoSource for SyntheticSource {
+    fn name(&self) -> &'static str {
+        "synthetic"
+    }
+    async fn next_frame(&mut self) -> Result<Frame, SourceError> {
+        Ok(self.next_frame_sync())
+    }
+}
+
+pub struct VideoFileSource {
+    frames: Vec<Frame>,
+    index: usize,
+    loop_playback: bool,
+    fps: u32,
+}
+impl VideoFileSource {
+    pub fn open(
+        path: impl Into<PathBuf>,
+        loop_playback: bool,
+        fps: u32,
+    ) -> Result<Self, SourceError> {
+        let path = path.into();
+        let mut paths = Vec::new();
+        if path.is_dir() {
+            let entries = fs::read_dir(&path).map_err(|e| SourceError(e.to_string()))?;
+            for entry in entries.flatten() {
+                let item = entry.path();
+                if item.is_file() {
+                    paths.push(item);
+                }
+            }
+            paths.sort();
+        } else if path.is_file() {
+            paths.push(path.clone());
+        }
+        if paths.is_empty() {
+            return Err(SourceError(format!(
+                "video file source has no readable frames: {}",
+                path.display()
+            )));
+        }
+        let mut frames = Vec::new();
+        for (index, item) in paths.iter().enumerate() {
+            let image = image::open(item)
+                .map_err(|error| SourceError(format!("decode {}: {error}", item.display())))?
+                .to_rgb8();
+            frames.push(Frame::from_rgb(
+                index as u64 + 1,
+                image.width(),
+                image.height(),
+                image.into_raw(),
+            ));
+        }
+        Ok(Self {
+            frames,
+            index: 0,
+            loop_playback,
+            fps: fps.max(1),
+        })
+    }
+    pub fn fps(&self) -> u32 {
+        self.fps
+    }
+    pub fn next_frame_sync(&mut self) -> Result<Frame, SourceError> {
+        if self.index >= self.frames.len() {
+            if !self.loop_playback {
+                return Err(SourceError("video file reached end of playback".into()));
+            }
+            self.index = 0;
+            tracing::info!("video file loop completed");
+        }
+        let frame = self.frames[self.index].clone();
+        self.index += 1;
+        Ok(frame)
+    }
+}
+#[async_trait(?Send)]
+impl VideoSource for VideoFileSource {
+    fn name(&self) -> &'static str {
+        "video-file"
+    }
+    async fn next_frame(&mut self) -> Result<Frame, SourceError> {
+        self.next_frame_sync()
+    }
+}
 
 #[async_trait]
 pub trait FrameProvider: Send {
@@ -117,11 +255,15 @@ pub struct SourceInfo {
     pub reconnect_count: u64,
     pub downtime_seconds: u64,
     pub frames_received: u64,
+    pub frames_generated: u64,
+    pub frames_dropped: u64,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct AddSource {
     pub id: String,
     pub kind: String,
+    #[serde(flatten)]
+    pub options: SourceOptions,
 }
 
 struct SourceEntry {
@@ -129,6 +271,7 @@ struct SourceEntry {
     desired_running: bool,
     started_at: Option<std::time::Instant>,
     disconnected_at: Option<std::time::Instant>,
+    options: SourceOptions,
 }
 
 struct CameraWorker {
@@ -160,6 +303,90 @@ impl CameraWorker {
             let _ = stop.send(());
         }
     }
+    fn start_synthetic(width: u32, height: u32, fps: u32) -> Result<Self, SourceManagerError> {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = tokio_mpsc::channel(2);
+        std::thread::Builder::new()
+            .name("sentinel-synthetic".into())
+            .spawn(move || {
+                let mut source = SyntheticSource::new(width, height, fps);
+                let _ = ready_tx.send(Ok(()));
+                let interval = std::time::Duration::from_secs_f64(1.0 / source.fps() as f64);
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    if frame_tx.blocking_send(source.next_frame_sync()).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(interval);
+                }
+            })
+            .map_err(|error| SourceManagerError::Camera(error.to_string()))?;
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(Self {
+                frames: Arc::new(Mutex::new(frame_rx)),
+                stop: Some(stop_tx),
+            }),
+            Ok(Err(error)) => Err(SourceManagerError::Camera(error)),
+            Err(error) => Err(SourceManagerError::Camera(format!(
+                "synthetic startup timed out: {error}"
+            ))),
+        }
+    }
+    fn start_video_file(
+        path: String,
+        loop_playback: bool,
+        fps: u32,
+    ) -> Result<Self, SourceManagerError> {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = tokio_mpsc::channel(2);
+        std::thread::Builder::new()
+            .name("sentinel-video-file".into())
+            .spawn(move || {
+                let mut source = match VideoFileSource::open(path, loop_playback, fps) {
+                    Ok(source) => {
+                        let _ = ready_tx.send(Ok(()));
+                        source
+                    }
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return;
+                    }
+                };
+                let interval = std::time::Duration::from_secs_f64(1.0 / source.fps() as f64);
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    match source.next_frame_sync() {
+                        Ok(frame) => {
+                            if frame_tx.blocking_send(frame).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::info!(error=%error, "video file playback stopped");
+                            break;
+                        }
+                    }
+                    std::thread::sleep(interval);
+                }
+            })
+            .map_err(|error| SourceManagerError::Camera(error.to_string()))?;
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => Ok(Self {
+                frames: Arc::new(Mutex::new(frame_rx)),
+                stop: Some(stop_tx),
+            }),
+            Ok(Err(error)) => Err(SourceManagerError::Camera(error)),
+            Err(error) => Err(SourceManagerError::Camera(format!(
+                "video file startup timed out: {error}"
+            ))),
+        }
+    }
 }
 #[derive(Debug)]
 pub enum SourceManagerError {
@@ -184,6 +411,9 @@ pub struct VideoSourceManager {
     fps: u32,
     sources: Arc<RwLock<BTreeMap<String, SourceEntry>>>,
     built_in: Arc<RwLock<Option<CameraWorker>>>,
+    synthetic: Arc<RwLock<Option<CameraWorker>>>,
+    video_file: Arc<RwLock<Option<CameraWorker>>>,
+    active_source: Arc<RwLock<Option<String>>>,
     events: EventBus,
     reconnect: ReconnectConfig,
     shutdown: watch::Receiver<bool>,
@@ -209,6 +439,8 @@ impl VideoSourceManager {
             reconnect_count: 0,
             downtime_seconds: 0,
             frames_received: 0,
+            frames_generated: 0,
+            frames_dropped: 0,
         };
         let mut sources = BTreeMap::new();
         sources.insert(
@@ -218,12 +450,16 @@ impl VideoSourceManager {
                 desired_running: false,
                 started_at: None,
                 disconnected_at: None,
+                options: SourceOptions::default(),
             },
         );
         Self {
             fps,
             sources: Arc::new(RwLock::new(sources)),
             built_in: Arc::new(RwLock::new(None)),
+            synthetic: Arc::new(RwLock::new(None)),
+            video_file: Arc::new(RwLock::new(None)),
+            active_source: Arc::new(RwLock::new(None)),
             events,
             reconnect,
             shutdown,
@@ -259,7 +495,10 @@ impl VideoSourceManager {
         info
     }
     pub async fn add(&self, request: AddSource) -> Result<SourceInfo, SourceManagerError> {
-        if request.kind != "built-in-camera" {
+        if !matches!(
+            request.kind.as_str(),
+            "built-in-camera" | "synthetic" | "video-file"
+        ) {
             return Err(SourceManagerError::Unsupported(request.kind));
         }
         let mut sources = self.sources.write().await;
@@ -278,6 +517,8 @@ impl VideoSourceManager {
             reconnect_count: 0,
             downtime_seconds: 0,
             frames_received: 0,
+            frames_generated: 0,
+            frames_dropped: 0,
         };
         sources.insert(
             request.id,
@@ -286,26 +527,49 @@ impl VideoSourceManager {
                 desired_running: false,
                 started_at: None,
                 disconnected_at: None,
+                options: request.options,
             },
         );
         Ok(info)
     }
     pub async fn start(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
-        if id != "builtin" {
-            return Err(SourceManagerError::Unsupported(id.into()));
-        }
-        if self.built_in.read().await.is_some() {
-            return self.get(id).await;
-        }
-        {
+        let (kind, options) = {
             let mut sources = self.sources.write().await;
             let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
             entry.desired_running = true;
             entry.info.status = SourceState::Starting;
+            (entry.info.kind.clone(), entry.options.clone())
+        };
+        if self.worker(id).await.is_some() {
+            return self.get(id).await;
         }
-        match CameraWorker::start(self.fps) {
+        // The current pipeline has one FrameProvider stream. Switching sources
+        // therefore stops the previous active worker before selecting the new one.
+        if let Some(active) = self.active_source.read().await.clone() {
+            if active != id {
+                let _ = self.stop(&active).await;
+            }
+        }
+        let worker = match kind.as_str() {
+            "built-in-camera" => CameraWorker::start(self.fps),
+            "synthetic" => CameraWorker::start_synthetic(
+                options.width.unwrap_or(640),
+                options.height.unwrap_or(360),
+                options.fps.unwrap_or(self.fps),
+            ),
+            "video-file" => CameraWorker::start_video_file(
+                options.path.ok_or_else(|| {
+                    SourceManagerError::Camera("video-file source requires path".into())
+                })?,
+                options.loop_playback.unwrap_or(true),
+                options.fps.unwrap_or(self.fps),
+            ),
+            other => return Err(SourceManagerError::Unsupported(other.into())),
+        };
+        match worker {
             Ok(worker) => {
-                *self.built_in.write().await = Some(worker);
+                self.set_worker(id, worker).await;
+                *self.active_source.write().await = Some(id.to_string());
                 let mut sources = self.sources.write().await;
                 let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
                 entry.info.status = SourceState::Running;
@@ -319,7 +583,7 @@ impl VideoSourceManager {
                     .set(
                         "camera",
                         crate::recovery::ComponentState::Healthy,
-                        "camera running",
+                        "source running",
                         0,
                     )
                     .await;
@@ -352,10 +616,11 @@ impl VideoSourceManager {
         entry.info.status = SourceState::Stopping;
         entry.desired_running = false;
         drop(sources);
-        if id == "builtin" {
-            if let Some(worker) = self.built_in.write().await.take() {
-                worker.stop();
-            }
+        if let Some(worker) = self.take_worker(id).await {
+            worker.stop();
+        }
+        if self.active_source.read().await.as_deref() == Some(id) {
+            *self.active_source.write().await = None;
         }
         let mut sources = self.sources.write().await;
         let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
@@ -381,9 +646,7 @@ impl VideoSourceManager {
         Ok(result)
     }
     pub async fn remove(&self, id: &str) -> Result<(), SourceManagerError> {
-        if id == "builtin" {
-            self.stop(id).await?;
-        }
+        self.stop(id).await?;
         if self.sources.write().await.remove(id).is_some() {
             Ok(())
         } else {
@@ -405,11 +668,79 @@ impl VideoSourceManager {
         let mut output = format!("sentinel_registered_sources {}\nsentinel_active_sources {}\nsentinel_failed_sources {}\nsentinel_source_reconnect_attempts {}\nsentinel_source_downtime_seconds {}\n", list.len(), active, failed, reconnects, downtime);
         for source in list {
             output.push_str(&format!(
-                "sentinel_source_frames_received{{source=\"{}\"}} {}\nsentinel_source_reconnect_count{{source=\"{}\"}} {}\nsentinel_source_downtime_seconds{{source=\"{}\"}} {}\n",
-                source.id, source.frames_received, source.id, source.reconnect_count, source.id, source.downtime_seconds
+                "sentinel_source_frames_received{{source=\"{}\"}} {}\nsentinel_source_frames_generated{{source=\"{}\"}} {}\nsentinel_source_frames_dropped{{source=\"{}\"}} {}\nsentinel_source_reconnect_count{{source=\"{}\"}} {}\nsentinel_source_downtime_seconds{{source=\"{}\"}} {}\n",
+                source.id, source.frames_received, source.id, source.frames_generated, source.id, source.frames_dropped, source.id, source.reconnect_count, source.id, source.downtime_seconds
             ));
         }
         output
+    }
+
+    async fn worker(&self, id: &str) -> Option<Arc<Mutex<tokio_mpsc::Receiver<Frame>>>> {
+        match id {
+            "builtin" => self
+                .built_in
+                .read()
+                .await
+                .as_ref()
+                .map(|w| w.frames.clone()),
+            _ => {
+                if self.synthetic.read().await.is_some()
+                    && self.active_source.read().await.as_deref() == Some(id)
+                {
+                    self.synthetic
+                        .read()
+                        .await
+                        .as_ref()
+                        .map(|w| w.frames.clone())
+                } else if self.video_file.read().await.is_some()
+                    && self.active_source.read().await.as_deref() == Some(id)
+                {
+                    self.video_file
+                        .read()
+                        .await
+                        .as_ref()
+                        .map(|w| w.frames.clone())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+    async fn set_worker(&self, id: &str, worker: CameraWorker) {
+        match id {
+            "builtin" => *self.built_in.write().await = Some(worker),
+            _ => {
+                let kind = self
+                    .sources
+                    .read()
+                    .await
+                    .get(id)
+                    .map(|e| e.info.kind.clone());
+                if kind.as_deref() == Some("synthetic") {
+                    *self.synthetic.write().await = Some(worker);
+                } else {
+                    *self.video_file.write().await = Some(worker);
+                }
+            }
+        }
+    }
+    async fn take_worker(&self, id: &str) -> Option<CameraWorker> {
+        match id {
+            "builtin" => self.built_in.write().await.take(),
+            _ => {
+                let kind = self
+                    .sources
+                    .read()
+                    .await
+                    .get(id)
+                    .map(|e| e.info.kind.clone());
+                if kind.as_deref() == Some("synthetic") {
+                    self.synthetic.write().await.take()
+                } else {
+                    self.video_file.write().await.take()
+                }
+            }
+        }
     }
 }
 impl VideoSourceManager {
@@ -529,21 +860,12 @@ impl VideoSourceManager {
 impl FrameProvider for VideoSourceManager {
     async fn next_frame(&mut self) -> Result<Frame, SourceError> {
         loop {
-            let running = self
-                .get("builtin")
-                .await
-                .map(|info| matches!(info.status, SourceState::Running))
-                .unwrap_or(false);
-            if !running {
+            let active = self.active_source.read().await.clone();
+            let Some(active) = active else {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
-            }
-            let receiver = self
-                .built_in
-                .read()
-                .await
-                .as_ref()
-                .map(|worker| worker.frames.clone());
+            };
+            let receiver = self.worker(&active).await;
             let result = match receiver {
                 Some(receiver) => receiver
                     .lock()
@@ -556,9 +878,10 @@ impl FrameProvider for VideoSourceManager {
             match result {
                 Ok(frame) => {
                     let mut sources = self.sources.write().await;
-                    if let Some(entry) = sources.get_mut("builtin") {
+                    if let Some(entry) = sources.get_mut(&active) {
                         entry.info.last_frame = Some(now_ms());
                         entry.info.frames_received += 1;
+                        entry.info.frames_generated += 1;
                         entry.info.resolution = Some(format!("{}x{}", frame.width, frame.height));
                         entry.info.fps = entry
                             .started_at
@@ -573,7 +896,7 @@ impl FrameProvider for VideoSourceManager {
                 Err(error) => {
                     let mut sources = self.sources.write().await;
                     let reconnect = sources
-                        .get_mut("builtin")
+                        .get_mut(&active)
                         .map(|entry| {
                             entry.info.status = SourceState::Disconnected;
                             entry.info.reconnect_count += 1;
@@ -584,16 +907,18 @@ impl FrameProvider for VideoSourceManager {
                         })
                         .unwrap_or(false);
                     drop(sources);
-                    if let Some(worker) = self.built_in.write().await.take() {
+                    if let Some(worker) = self.take_worker(&active).await {
                         worker.stop();
                     }
                     self.events.publish(Event {
                         kind: "source_disconnected".into(),
-                        source_id: Some("builtin".into()),
+                        source_id: Some(active.clone()),
                         message: error.to_string(),
                     });
-                    if reconnect {
+                    if reconnect && active == "builtin" {
                         self.reconnect_until_running().await;
+                    } else if reconnect {
+                        let _ = self.start(&active).await;
                     }
                 }
             }

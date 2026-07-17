@@ -15,6 +15,12 @@ pub enum Command {
     Serve {
         #[arg(long, default_value = "0.0.0.0:8080")]
         bind: String,
+        #[arg(
+            long,
+            default_value = "builtin",
+            help = "initial source: builtin or synthetic"
+        )]
+        source: String,
     },
     Status {
         #[arg(long, default_value = "http://127.0.0.1:8080/api/v1/status")]
@@ -94,6 +100,16 @@ pub enum SourceCommand {
         id: String,
         #[arg(long, default_value = "built-in-camera")]
         kind: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        width: Option<u32>,
+        #[arg(long)]
+        height: Option<u32>,
+        #[arg(long)]
+        fps: Option<u32>,
+        #[arg(long, default_value_t = true)]
+        loop_playback: bool,
     },
     Remove {
         id: String,
@@ -102,6 +118,9 @@ pub enum SourceCommand {
         id: String,
     },
     Stop {
+        id: String,
+    },
+    Restart {
         id: String,
     },
 }

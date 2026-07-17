@@ -205,12 +205,22 @@ async fn mjpeg(
     Path(source_id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    if source_id != "builtin" {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error":"source not found"})),
-        )
-            .into_response();
+    match state.sources.get(&source_id).await {
+        Ok(source) if matches!(source.status, crate::sources::SourceState::Running) => {}
+        Ok(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"source is not running"})),
+            )
+                .into_response()
+        }
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"source not found"})),
+            )
+                .into_response()
+        }
     }
     let stream = state.mjpeg.stream(source_id);
     Response::builder()

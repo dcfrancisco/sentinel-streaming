@@ -58,6 +58,16 @@
 - Cross-platform Unix process CPU and resident-memory metrics.
 - Frame-buffer size, capacity, utilization, and eviction metrics.
 - MJPEG byte-rate metrics.
+
+### Milestone 11 — Virtual video sources
+
+- Synthetic animated test-pattern source with configurable resolution and FPS.
+- Image and image-sequence video-file adapter with looping and playback FPS.
+- Manager/API/CLI integration through the existing `FrameProvider` boundary.
+- Camera-free tests and sample-asset guidance under `samples/`.
+
+Container decoding such as MP4 remains a follow-up backend decision; it must be
+added behind `VideoSource` without changing the pipeline or consumers.
 - Hardware-independent integration tests for REST, MJPEG, events, and mock Vision.
 - Synthetic endurance command with machine-readable JSON reports.
 

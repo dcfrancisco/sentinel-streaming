@@ -37,13 +37,19 @@ The built-in source uses the native camera backend provided by Nokhwa. It captur
 device index `0` by default; select another camera with
 `SENTINEL_CAMERA_INDEX`. Every frame passes through the configurable processing
 pipeline. Preview and buffering are enabled by default; recording, vision, and
-event publisher stages remain extension points. USB, RTSP, ONVIF, and video-file
-adapters remain future work. The latest captured frame is JPEG-encoded by the
+event publisher stages remain extension points. The manager also supports a
+hardware-independent synthetic source and image-sequence video-file source;
+USB, RTSP, ONVIF, and container decoding remain future work. The latest captured frame is JPEG-encoded by the
 preview stage and exposed at `/api/v1/preview`.
 
 The `VideoSourceManager` owns live source implementations. The pipeline consumes the manager through the `FrameProvider` abstraction and does not depend on concrete camera types. The `serve` runtime coordinates configuration, logging, metrics, source initialization, pipeline startup, HTTP serving, signal handling, and graceful shutdown.
 
-The manager now owns source lifecycle and runtime metadata. Built-in camera management supports start, stop, restart, failure tracking, reconnect attempts, frame counters, resolution, FPS, uptime, and internal lifecycle events. Other source types return `501 Not Implemented` until their adapters are added.
+The manager now owns source lifecycle and runtime metadata for built-in, synthetic,
+and image-sequence video-file sources. Start a camera-free server with
+`cargo run -- serve --source synthetic`, or register a source through
+`POST /api/v1/sources` using `kind: synthetic` or `kind: video-file`. All source
+types use the same frame provider, pipeline, frame buffer, MJPEG, metrics, and
+health paths.
 
 Vision is an optional background consumer of the `FrameBuffer`. When
 `OPENAI_API_KEY` is available, it analyzes buffered frames every five seconds

@@ -71,12 +71,12 @@ curl -N -H 'Authorization: Bearer dev-token' \
 ## CLI
 
 ```text
-sentinel-streaming serve [--bind <address>]
+sentinel-streaming serve [--bind <address>] [--source builtin|synthetic]
 sentinel-streaming status [--endpoint <url>]
 sentinel-streaming stop [--endpoint <url>]
 sentinel-streaming version
 sentinel-streaming endurance [--duration <N>s|<N>m|<N>h] [--source synthetic] [--viewers <N>] [--vision mock]
-sentinel-streaming source list|add|remove|start|stop
+sentinel-streaming source list|add|remove|start|stop|restart
 sentinel-streaming config show
 sentinel-streaming metrics
 sentinel-streaming auth login|logout|status|whoami

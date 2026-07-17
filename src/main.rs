@@ -14,7 +14,7 @@ use sentinel_streaming::{
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve { bind } => serve(bind).await?,
+        Command::Serve { bind, source } => serve(bind, source).await?,
         Command::Status { endpoint } => cli::status(&endpoint).await?,
         Command::Stop { endpoint } => cli::request(reqwest::Method::POST, &endpoint, None).await?,
         Command::Version => println!("sentinel-streaming {}", env!("CARGO_PKG_VERSION")),
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serve(bind: String) -> anyhow::Result<()> {
+async fn serve(bind: String, source: String) -> anyhow::Result<()> {
     logging::init();
     tracing::info!("starting sentinel-streaming");
     let config = Config {
@@ -69,13 +69,29 @@ async fn serve(bind: String) -> anyhow::Result<()> {
         shutdown_tx.clone(),
         shutdown_tx.subscribe(),
     );
+    let source_id = match source.as_str() {
+        "builtin" => "builtin".to_string(),
+        "synthetic" => {
+            state
+                .sources
+                .add(sentinel_streaming::sources::AddSource {
+                    id: "synthetic".into(),
+                    kind: "synthetic".into(),
+                    options: Default::default(),
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            "synthetic".to_string()
+        }
+        other => return Err(anyhow::anyhow!("unsupported initial source '{other}'")),
+    };
     state
         .sources
-        .start("builtin")
+        .start(&source_id)
         .await
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     state.runtime.mark_camera_opened().await;
-    tracing::info!(source = "built-in-camera", "camera opened");
+    tracing::info!(source = %source_id, "video source opened");
     let mut pipeline_config = config.pipeline.clone();
     pipeline_config.buffer = config.buffer.enabled;
     state.runtime.mark_pipeline_initialized().await;
@@ -159,11 +175,11 @@ async fn source_command(command: SourceCommand) -> anyhow::Result<()> {
     let base = format!("{}/api/v1/sources", cli::server_base());
     match command {
         SourceCommand::List => cli::request(reqwest::Method::GET, &base, None).await?,
-        SourceCommand::Add { id, kind } => {
+        SourceCommand::Add { id, kind, path, width, height, fps, loop_playback } => {
             cli::request(
                 reqwest::Method::POST,
                 &base,
-                Some(serde_json::json!({"id": id, "kind": kind})),
+                Some(serde_json::json!({"id": id, "kind": kind, "path": path, "width": width, "height": height, "fps": fps, "loop": loop_playback})),
             )
             .await?
         }
@@ -175,6 +191,9 @@ async fn source_command(command: SourceCommand) -> anyhow::Result<()> {
         }
         SourceCommand::Stop { id } => {
             cli::request(reqwest::Method::POST, &format!("{base}/{id}/stop"), None).await?
+        }
+        SourceCommand::Restart { id } => {
+            cli::request(reqwest::Method::POST, &format!("{base}/{id}/restart"), None).await?
         }
     }
     Ok(())
