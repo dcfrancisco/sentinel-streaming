@@ -8,6 +8,7 @@ platform component, not a complete security product.
 
 - [Architecture](architecture.md) — runtime, module boundaries, data flow, and invariants.
 - [Administration API](api.md) — REST, MJPEG, SSE, authentication, and CLI behavior.
+- [Configuration](configuration.md) — YAML, environment, CLI precedence, and validation.
 - [Operations](operations.md) — deployment, camera permissions, startup, shutdown, and observability.
 - [Observability](observability.md) — open-standard logs, metrics, tracing, and platform integration.
 - [Self-healing runtime](self-healing.md) — health states, recovery actions, events, and policies.

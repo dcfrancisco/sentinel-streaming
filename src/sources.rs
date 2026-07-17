@@ -86,7 +86,7 @@ pub struct UsbCamera;
 #[allow(dead_code)]
 pub struct RtspCamera;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RtspCredentials {
     pub username_env: Option<String>,
     pub password_env: Option<String>,

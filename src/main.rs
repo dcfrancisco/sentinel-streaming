@@ -14,7 +14,11 @@ use sentinel_streaming::{
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve { bind, source } => serve(bind, source).await?,
+        Command::Serve {
+            bind,
+            config,
+            source,
+        } => serve(bind, config, source).await?,
         Command::Status { endpoint } => cli::status(&endpoint).await?,
         Command::Stop { endpoint } => cli::request(reqwest::Method::POST, &endpoint, None).await?,
         Command::Version => println!("sentinel-streaming {}", env!("CARGO_PKG_VERSION")),
@@ -53,13 +57,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serve(bind: String, source: String) -> anyhow::Result<()> {
-    logging::init();
+async fn serve(
+    bind: Option<String>,
+    config_path: std::path::PathBuf,
+    source: Option<String>,
+) -> anyhow::Result<()> {
+    let config = Config::load(&config_path, bind.as_deref(), source.as_deref())
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    logging::init(&config.logging.level);
     tracing::info!("starting sentinel-streaming");
-    let config = Config {
-        bind,
-        ..Config::default()
-    };
     tracing::info!(config = ?config, "configuration loaded");
     let frame_buffer = FrameBuffer::new(config.buffer.capacity);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -69,29 +75,33 @@ async fn serve(bind: String, source: String) -> anyhow::Result<()> {
         shutdown_tx.clone(),
         shutdown_tx.subscribe(),
     );
-    let source_id = match source.as_str() {
-        "builtin" => "builtin".to_string(),
-        "synthetic" => {
+    let mut started_source = None;
+    for configured in &config.sources {
+        if configured.id != "builtin" {
             state
                 .sources
                 .add(sentinel_streaming::sources::AddSource {
-                    id: "synthetic".into(),
-                    kind: "synthetic".into(),
-                    options: Default::default(),
+                    id: configured.id.clone(),
+                    kind: configured.kind.clone(),
+                    options: configured.options(),
                 })
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            "synthetic".to_string()
         }
-        other => return Err(anyhow::anyhow!("unsupported initial source '{other}'")),
-    };
-    state
-        .sources
-        .start(&source_id)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    state.runtime.mark_camera_opened().await;
-    tracing::info!(source = %source_id, "video source opened");
+        if configured.enabled && started_source.is_none() {
+            state
+                .sources
+                .start(&configured.id)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            started_source = Some(configured.id.clone());
+            state.runtime.mark_camera_opened().await;
+            tracing::info!(source = %configured.id, "video source opened");
+        }
+    }
+    if started_source.is_none() {
+        return Err(anyhow::anyhow!("configuration has no enabled video source"));
+    }
     let mut pipeline_config = config.pipeline.clone();
     pipeline_config.buffer = config.buffer.enabled;
     state.runtime.mark_pipeline_initialized().await;

@@ -68,6 +68,10 @@ curl -N http://127.0.0.1:8081/api/v1/streams/synthetic/mjpeg
 Use `Ctrl+C` or the API-backed `sentinel-streaming stop` command to shut down
 gracefully.
 
+For repeatable deployments, place configuration in `sentinel.yaml` or pass
+`--config`. See [docs/configuration.md](docs/configuration.md) for the complete
+schema and precedence rules.
+
 ## Administration
 
 Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` by default and exposes:

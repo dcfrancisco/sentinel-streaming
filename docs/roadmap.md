@@ -79,9 +79,6 @@ added behind `VideoSource` without changing the pipeline or consumers.
 - Hardware-independent integration tests for REST, MJPEG, events, and mock Vision.
 - Synthetic endurance command with machine-readable JSON reports.
 
-Configuration-file loading is intentionally deferred because a YAML parser and
-configuration precedence model need to be introduced and tested separately.
-
 ### Milestone 10 — Self-healing runtime
 
 - Component health monitor with healthy, degraded, recovering, and failed states.
@@ -106,12 +103,10 @@ multi-process deployments.
 5. Remove or narrowly annotate intentional dead-code warnings so Clippy can be a
    release gate.
 6. Add service-manager packaging and restart policy examples for macOS/Linux.
-7. Add structured configuration loading and validation.
+7. Add structured configuration validation and broader environment coverage.
 8. Add endurance and recovery test tooling.
 9. Add correlation IDs and OpenTelemetry spans without coupling the runtime to a
    specific observability vendor.
-10. Add validated YAML configuration loading with CLI > environment > file >
-    defaults precedence.
 
 ## Future capabilities
 

@@ -2,6 +2,10 @@
 
 ## Build and run
 
+Configuration is loaded from `sentinel.yaml` in the current working directory
+unless `--config` specifies another path. See the [Configuration Guide](configuration.md)
+for YAML examples and precedence rules.
+
 Development build:
 
 ```bash

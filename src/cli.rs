@@ -13,14 +13,16 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Serve {
-        #[arg(long, default_value = "0.0.0.0:8080")]
-        bind: String,
+        #[arg(long)]
+        bind: Option<String>,
+        #[arg(long, default_value = "sentinel.yaml")]
+        config: std::path::PathBuf,
         #[arg(
             long,
             default_value = "builtin",
             help = "initial source: builtin or synthetic"
         )]
-        source: String,
+        source: Option<String>,
     },
     Status {
         #[arg(long, default_value = "http://127.0.0.1:8080/api/v1/status")]

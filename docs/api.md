@@ -30,7 +30,7 @@ in shell history, source files, or committed configuration.
 | GET | `/api/v1/status` | Runtime, metrics, and buffer snapshot |
 | GET | `/api/v1/version` | Service name and version |
 | POST | `/api/v1/stop` | Request graceful shutdown |
-| GET | `/api/v1/config` | Effective configuration |
+| GET | `/api/v1/config` | Read-only effective configuration with secrets masked |
 | GET | `/api/v1/sources` | List registered sources |
 | GET | `/api/v1/sources/{id}` | Source metadata and state |
 | POST | `/api/v1/sources` | Register a supported source definition |
@@ -71,7 +71,7 @@ curl -N -H 'Authorization: Bearer dev-token' \
 ## CLI
 
 ```text
-sentinel-streaming serve [--bind <address>] [--source builtin|synthetic]
+sentinel-streaming serve [--config <path>] [--bind <address>] [--source <type>]
 sentinel-streaming status [--endpoint <url>]
 sentinel-streaming stop [--endpoint <url>]
 sentinel-streaming version
