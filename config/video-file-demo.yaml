@@ -1,0 +1,16 @@
+server:
+  bind: 127.0.0.1:8081
+pipeline:
+  preview: true
+  buffer: true
+vision:
+  enabled: false
+sources:
+  - id: front-gate
+    name: Front Gate Demo
+    type: video-file
+    path: platform/sentinel-streaming/samples/front-gate.mp4
+    loop: true
+    width: 640
+    height: 360
+    fps: 15

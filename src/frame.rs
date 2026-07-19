@@ -1,3 +1,4 @@
+use image::{codecs::jpeg::JpegEncoder, ColorType, ImageEncoder};
 use serde::Serialize;
 use std::{sync::Arc, time::SystemTime};
 
@@ -37,5 +38,12 @@ impl Frame {
             height,
             data: Arc::from(data),
         }
+    }
+
+    pub fn jpeg(&self, quality: u8) -> Result<Vec<u8>, image::ImageError> {
+        let mut output = Vec::new();
+        let encoder = JpegEncoder::new_with_quality(&mut output, quality);
+        encoder.write_image(&self.data, self.width, self.height, ColorType::Rgb8.into())?;
+        Ok(output)
     }
 }

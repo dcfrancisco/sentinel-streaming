@@ -1,0 +1,16 @@
+server:
+  bind: 127.0.0.1:8081
+pipeline:
+  preview: true
+  buffer: true
+vision:
+  enabled: false
+sources:
+  - id: front-gate
+    name: Front Gate RTSP Demo
+    type: rtsp
+    uri: rtsp://127.0.0.1:8554/front-gate
+    transport: tcp
+    width: 640
+    height: 360
+    fps: 15

@@ -19,8 +19,7 @@ pub enum Command {
         config: std::path::PathBuf,
         #[arg(
             long,
-            default_value = "builtin",
-            help = "initial source: builtin or synthetic"
+            help = "override configured initial source: builtin or synthetic"
         )]
         source: Option<String>,
     },

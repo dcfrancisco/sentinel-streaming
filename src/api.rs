@@ -27,6 +27,7 @@ use axum::{
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -122,7 +123,9 @@ pub fn router(shared: Arc<AppState>) -> Router {
         .route("/api/v1/preview", get(preview))
         .route("/api/v1/vision/latest", get(vision_latest))
         .route("/api/v1/streams/:source_id/mjpeg", get(mjpeg))
+        .route("/api/v1/streams/:source_id/frame", get(frame))
         .layer(middleware::from_fn_with_state(shared.clone(), require_auth))
+        .layer(CorsLayer::permissive())
         .with_state(shared)
 }
 async fn live() -> impl IntoResponse {
@@ -231,6 +234,50 @@ async fn mjpeg(
         )
         .body(Body::from_stream(stream))
         .expect("valid MJPEG response")
+}
+async fn frame(
+    Path(source_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.sources.get(&source_id).await {
+        Ok(source) if matches!(source.status, crate::sources::SourceState::Running) => {}
+        Ok(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"source is not running"})),
+            )
+                .into_response()
+        }
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"source not found"})),
+            )
+                .into_response()
+        }
+    }
+    match state.frame_buffer.latest() {
+        Some(frame) => match frame.jpeg(82) {
+            Ok(bytes) => (
+                [
+                    (header::CONTENT_TYPE, "image/jpeg"),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                ],
+                bytes,
+            )
+                .into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"no frame available"})),
+        )
+            .into_response(),
+    }
 }
 async fn require_auth(
     State(state): State<Arc<AppState>>,

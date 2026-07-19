@@ -34,3 +34,27 @@ only one active worker because the current processing pipeline has one
 RTSP credentials should be supplied through environment references in the API
 payload. They are resolved only inside the worker and are never returned by
 source status or written to logs.
+# RTSP video simulator
+
+The repository includes a deterministic local video fixture and scripts for
+publishing it as a looping RTSP camera. From the workspace root:
+
+```bash
+./scripts/start-rtsp-simulator.sh
+```
+
+The publisher uses FFmpeg and sends the MP4 to MediaMTX at:
+
+```text
+rtsp://127.0.0.1:8554/front-gate
+```
+
+MediaMTX is started with `ops/rtsp/docker-compose.yml` when Docker is
+available. A local `mediamtx` binary is also supported. Stop the simulator
+with `./scripts/stop-rtsp-simulator.sh`.
+
+To connect Streaming to the simulator, configure an `rtsp` source with TCP
+transport and start Streaming. For development without MediaMTX, use the
+`video-file-demo.yaml` configuration; it decodes the same MP4 directly through
+FFmpeg while exercising the identical FrameProvider, pipeline, buffer, MJPEG,
+and frame-capture boundaries.

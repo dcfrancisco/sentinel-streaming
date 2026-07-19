@@ -471,7 +471,7 @@ impl Config {
             }
             if !matches!(
                 source.kind.as_str(),
-                "built-in-camera" | "synthetic" | "image-sequence" | "rtsp"
+                "built-in-camera" | "synthetic" | "image-sequence" | "video-file" | "rtsp"
             ) {
                 return Err(ConfigError::Invalid(format!(
                     "unsupported source type '{}'",
@@ -529,10 +529,12 @@ impl Config {
                     ));
                 }
             }
-            if source.kind == "image-sequence" && source.path.is_none() {
+            if matches!(source.kind.as_str(), "image-sequence" | "video-file")
+                && source.path.is_none()
+            {
                 return Err(ConfigError::Invalid(format!(
-                    "image-sequence source '{}' requires path",
-                    source.id
+                    "{} source '{}' requires path",
+                    source.kind, source.id
                 )));
             }
         }

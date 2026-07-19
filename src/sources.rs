@@ -246,6 +246,76 @@ pub struct RtspVideoSource {
     height: u32,
     sequence: u64,
 }
+
+/// Decodes a local video file in real time through FFmpeg. This keeps MP4
+/// ingestion on the same FrameProvider boundary as cameras and RTSP sources.
+pub struct FfmpegVideoFileSource {
+    child: Child,
+    stdout: std::process::ChildStdout,
+    width: u32,
+    height: u32,
+    sequence: u64,
+}
+impl FfmpegVideoFileSource {
+    pub fn open(
+        path: String,
+        loop_playback: bool,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<Self, SourceError> {
+        let executable = std::env::var("SENTINEL_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let mut command = Command::new(executable);
+        command.args(["-hide_banner", "-loglevel", "error"]);
+        if loop_playback {
+            command.args(["-stream_loop", "-1"]);
+        }
+        command
+            .args(["-re", "-i", path.as_str(), "-an", "-sn", "-dn"])
+            .args([
+                "-vf",
+                &format!("scale={width}:{height}"),
+                "-r",
+                &fps.max(1).to_string(),
+            ])
+            .args(["-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command
+            .spawn()
+            .map_err(|error| SourceError(format!("video decoder unavailable: {error}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| SourceError("video decoder did not provide output".into()))?;
+        Ok(Self {
+            child,
+            stdout,
+            width: width.max(1),
+            height: height.max(1),
+            sequence: 0,
+        })
+    }
+    pub fn next_frame_sync(&mut self) -> Result<Frame, SourceError> {
+        let mut data = vec![0u8; (self.width * self.height * 3) as usize];
+        self.stdout
+            .read_exact(&mut data)
+            .map_err(|error| SourceError(format!("video decode failed: {error}")))?;
+        self.sequence += 1;
+        Ok(Frame::from_rgb(
+            self.sequence,
+            self.width,
+            self.height,
+            data,
+        ))
+    }
+}
+impl Drop for FfmpegVideoFileSource {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 impl RtspVideoSource {
     pub fn connect(
         uri: String,
@@ -478,6 +548,8 @@ impl CameraWorker {
     fn start_video_file(
         path: String,
         loop_playback: bool,
+        width: u32,
+        height: u32,
         fps: u32,
     ) -> Result<Self, SourceManagerError> {
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -486,17 +558,17 @@ impl CameraWorker {
         std::thread::Builder::new()
             .name("sentinel-video-file".into())
             .spawn(move || {
-                let mut source = match ImageSequenceSource::open(path, loop_playback, fps) {
-                    Ok(source) => {
-                        let _ = ready_tx.send(Ok(()));
-                        source
-                    }
-                    Err(error) => {
-                        let _ = ready_tx.send(Err(error.to_string()));
-                        return;
-                    }
-                };
-                let interval = std::time::Duration::from_secs_f64(1.0 / source.fps() as f64);
+                let mut source =
+                    match FfmpegVideoFileSource::open(path, loop_playback, width, height, fps) {
+                        Ok(source) => {
+                            let _ = ready_tx.send(Ok(()));
+                            source
+                        }
+                        Err(error) => {
+                            let _ = ready_tx.send(Err(error.to_string()));
+                            return;
+                        }
+                    };
                 loop {
                     if stop_rx.try_recv().is_ok() {
                         break;
@@ -512,7 +584,6 @@ impl CameraWorker {
                             break;
                         }
                     }
-                    std::thread::sleep(interval);
                 }
             })
             .map_err(|error| SourceManagerError::Camera(error.to_string()))?;
@@ -709,7 +780,7 @@ impl VideoSourceManager {
     pub async fn add(&self, request: AddSource) -> Result<SourceInfo, SourceManagerError> {
         if !matches!(
             request.kind.as_str(),
-            "built-in-camera" | "synthetic" | "image-sequence" | "rtsp"
+            "built-in-camera" | "synthetic" | "image-sequence" | "video-file" | "rtsp"
         ) {
             return Err(SourceManagerError::Unsupported(request.kind));
         }
@@ -778,11 +849,13 @@ impl VideoSourceManager {
                 options.height.unwrap_or(360),
                 options.fps.unwrap_or(self.fps),
             ),
-            "image-sequence" => CameraWorker::start_video_file(
+            "image-sequence" | "video-file" => CameraWorker::start_video_file(
                 options.path.ok_or_else(|| {
-                    SourceManagerError::Camera("image-sequence source requires path".into())
+                    SourceManagerError::Camera("video file source requires path".into())
                 })?,
                 options.loop_playback.unwrap_or(true),
+                options.width.unwrap_or(640),
+                options.height.unwrap_or(360),
                 options.fps.unwrap_or(self.fps),
             ),
             "rtsp" => CameraWorker::start_rtsp(options, self.fps),
