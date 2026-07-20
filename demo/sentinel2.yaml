@@ -1,0 +1,12 @@
+sources:
+  - id: front-gate
+    name: Front Gate Demo
+    type: video-file
+    path: samples/front-gate.mp4
+    loop: true
+    width: 1280
+    height: 720
+    fps: 30
+
+server:
+  bind: 127.0.0.1:8081
