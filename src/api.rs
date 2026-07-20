@@ -9,7 +9,7 @@ use crate::{
     preview::Preview,
     recovery::{HealthMonitor, RecoveryEngine},
     runtime::RuntimeStatus,
-    sources::{AddSource, SourceManagerError, VideoSourceManager},
+    sources::{AddSource, ConnectionTestRequest, SourceManagerError, VideoSourceManager},
     vision::{VisionMetrics, VisionState},
 };
 use axum::{
@@ -110,6 +110,9 @@ pub fn router(shared: Arc<AppState>) -> Router {
         .route("/api/v1/version", get(version))
         .route("/api/v1/stop", post(stop))
         .route("/api/v1/sources", get(list_sources).post(add_source))
+        .route("/api/v1/sources/providers", get(source_providers))
+        .route("/api/v1/sources/discover", get(discover_sources))
+        .route("/api/v1/sources/test", post(test_source))
         .route("/api/v1/sources/:id", get(get_source).delete(remove_source))
         .route("/api/v1/sources/:id/start", post(start_source))
         .route("/api/v1/sources/:id/stop", post(stop_source))
@@ -309,6 +312,24 @@ async fn require_auth(
 }
 async fn list_sources(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(state.sources.list().await)
+}
+async fn source_providers() -> impl IntoResponse {
+    Json(VideoSourceManager::providers())
+}
+async fn discover_sources(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(state.sources.discover().await)
+}
+async fn test_source(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ConnectionTestRequest>,
+) -> impl IntoResponse {
+    let result = state.sources.test_connection(request).await;
+    let status = if result.success {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    (status, Json(result))
 }
 async fn add_source(
     State(state): State<Arc<AppState>>,

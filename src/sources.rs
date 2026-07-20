@@ -21,6 +21,7 @@ use std::{
     sync::{mpsc, Arc},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::net::UdpSocket;
 use tokio::sync::{mpsc as tokio_mpsc, watch, Mutex, RwLock};
 
 #[allow(dead_code)]
@@ -90,6 +91,10 @@ pub struct RtspCamera;
 pub struct RtspCredentials {
     pub username_env: Option<String>,
     pub password_env: Option<String>,
+    #[serde(skip_serializing)]
+    pub username: Option<String>,
+    #[serde(skip_serializing)]
+    pub password: Option<String>,
 }
 #[allow(dead_code)]
 pub struct OnvifCamera;
@@ -97,6 +102,9 @@ pub struct OnvifCamera;
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct SourceOptions {
     pub name: Option<String>,
+    pub vendor: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
     pub path: Option<String>,
     pub uri: Option<String>,
     pub transport: Option<String>,
@@ -389,12 +397,16 @@ fn add_rtsp_credentials(
     let Some(credentials) = credentials else {
         return Ok(uri);
     };
-    let username = credentials
-        .username_env
-        .and_then(|name| std::env::var(name).ok());
-    let password = credentials
-        .password_env
-        .and_then(|name| std::env::var(name).ok());
+    let username = credentials.username.or_else(|| {
+        credentials
+            .username_env
+            .and_then(|name| std::env::var(name).ok())
+    });
+    let password = credentials.password.or_else(|| {
+        credentials
+            .password_env
+            .and_then(|name| std::env::var(name).ok())
+    });
     if username.is_none() && password.is_none() {
         return Ok(uri);
     }
@@ -474,6 +486,45 @@ pub struct AddSource {
     pub kind: String,
     #[serde(flatten)]
     pub options: SourceOptions,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CameraProviderInfo {
+    pub id: String,
+    pub name: String,
+    pub discovery: bool,
+    pub test_connection: bool,
+    pub implemented: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DiscoveredCamera {
+    pub id: String,
+    pub name: String,
+    pub vendor: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub address: Option<String>,
+    pub capabilities: Vec<String>,
+    pub requires_manual_stream: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConnectionTestRequest {
+    pub id: Option<String>,
+    pub kind: String,
+    #[serde(flatten)]
+    pub options: SourceOptions,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ConnectionTestResult {
+    pub success: bool,
+    pub source_type: String,
+    pub resolution: Option<String>,
+    pub fps: f64,
+    pub latency_ms: u64,
+    pub message: String,
 }
 
 struct SourceEntry {
@@ -598,6 +649,20 @@ impl CameraWorker {
             ))),
         }
     }
+    fn start_mjpeg(options: SourceOptions, default_fps: u32) -> Result<Self, SourceManagerError> {
+        let uri = options
+            .uri
+            .or_else(|| options.path.clone())
+            .ok_or_else(|| SourceManagerError::Camera("MJPEG source requires uri".into()))?;
+        Self::start_video_file(
+            uri,
+            false,
+            options.width.unwrap_or(640),
+            options.height.unwrap_or(360),
+            options.fps.unwrap_or(default_fps),
+        )
+    }
+
     fn start_rtsp(options: SourceOptions, default_fps: u32) -> Result<Self, SourceManagerError> {
         let uri = options
             .uri
@@ -690,6 +755,7 @@ pub struct VideoSourceManager {
     synthetic: Arc<RwLock<Option<CameraWorker>>>,
     video_file: Arc<RwLock<Option<CameraWorker>>>,
     rtsp: Arc<RwLock<Option<CameraWorker>>>,
+    mjpeg: Arc<RwLock<Option<CameraWorker>>>,
     active_source: Arc<RwLock<Option<String>>>,
     events: EventBus,
     reconnect: ReconnectConfig,
@@ -742,6 +808,7 @@ impl VideoSourceManager {
             synthetic: Arc::new(RwLock::new(None)),
             video_file: Arc::new(RwLock::new(None)),
             rtsp: Arc::new(RwLock::new(None)),
+            mjpeg: Arc::new(RwLock::new(None)),
             active_source: Arc::new(RwLock::new(None)),
             events,
             reconnect,
@@ -780,7 +847,7 @@ impl VideoSourceManager {
     pub async fn add(&self, request: AddSource) -> Result<SourceInfo, SourceManagerError> {
         if !matches!(
             request.kind.as_str(),
-            "built-in-camera" | "synthetic" | "image-sequence" | "video-file" | "rtsp"
+            "built-in-camera" | "synthetic" | "image-sequence" | "video-file" | "rtsp" | "mjpeg"
         ) {
             return Err(SourceManagerError::Unsupported(request.kind));
         }
@@ -824,6 +891,210 @@ impl VideoSourceManager {
         );
         Ok(info)
     }
+
+    pub fn providers() -> Vec<CameraProviderInfo> {
+        vec![
+            CameraProviderInfo {
+                id: "synthetic".into(),
+                name: "Synthetic test camera".into(),
+                discovery: true,
+                test_connection: true,
+                implemented: true,
+            },
+            CameraProviderInfo {
+                id: "built-in-camera".into(),
+                name: "Built-in / USB camera".into(),
+                discovery: true,
+                test_connection: true,
+                implemented: true,
+            },
+            CameraProviderInfo {
+                id: "rtsp".into(),
+                name: "RTSP camera".into(),
+                discovery: false,
+                test_connection: true,
+                implemented: true,
+            },
+            CameraProviderInfo {
+                id: "mjpeg".into(),
+                name: "HTTP/MJPEG camera".into(),
+                discovery: false,
+                test_connection: true,
+                implemented: true,
+            },
+            CameraProviderInfo {
+                id: "onvif".into(),
+                name: "ONVIF discovery".into(),
+                discovery: true,
+                test_connection: false,
+                implemented: true,
+            },
+            CameraProviderInfo {
+                id: "video-file".into(),
+                name: "Video file".into(),
+                discovery: false,
+                test_connection: true,
+                implemented: true,
+            },
+        ]
+    }
+
+    pub async fn discover(&self) -> Vec<DiscoveredCamera> {
+        let mut discovered = self
+            .list()
+            .await
+            .into_iter()
+            .map(|source| DiscoveredCamera {
+                id: source.id,
+                name: source.name,
+                vendor: None,
+                kind: source.kind,
+                address: None,
+                capabilities: vec!["live-preview".into(), "health-monitoring".into()],
+                requires_manual_stream: false,
+            })
+            .collect::<Vec<_>>();
+        if !discovered.iter().any(|camera| camera.kind == "synthetic") {
+            discovered.push(DiscoveredCamera {
+                id: "synthetic-discovery".into(),
+                name: "Synthetic Test Camera".into(),
+                vendor: Some("Sentinel".into()),
+                kind: "synthetic".into(),
+                address: None,
+                capabilities: vec![
+                    "live-preview".into(),
+                    "health-monitoring".into(),
+                    "hardware-free".into(),
+                ],
+                requires_manual_stream: false,
+            });
+        }
+        const PROBE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope" xmlns:w="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dn="http://www.onvif.org/ver10/network/wsdl">
+  <e:Header><w:MessageID>uuid:sentinel-discovery</w:MessageID><w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To><w:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action></e:Header>
+  <e:Body><d:Probe><d:Type>dn:NetworkVideoTransmitter</d:Type></d:Probe></e:Body>
+</e:Envelope>"#;
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+            let _ = socket
+                .send_to(PROBE.as_bytes(), "239.255.255.250:3702")
+                .await;
+            let mut buffer = [0u8; 8192];
+            loop {
+                let received = tokio::time::timeout(
+                    std::time::Duration::from_millis(250),
+                    socket.recv_from(&mut buffer),
+                )
+                .await;
+                let Ok(Ok((length, address))) = received else {
+                    break;
+                };
+                let response = String::from_utf8_lossy(&buffer[..length]);
+                let xaddr = xml_value(&response, "XAddrs");
+                let scopes = xml_value(&response, "Scopes");
+                let identity = xaddr.clone().unwrap_or_else(|| address.to_string());
+                let id = format!("onvif-{:x}", stable_hash(&identity));
+                if discovered.iter().any(|camera| camera.id == id) {
+                    continue;
+                }
+                discovered.push(DiscoveredCamera {
+                    id,
+                    name: scopes
+                        .as_deref()
+                        .and_then(scope_name)
+                        .unwrap_or("ONVIF camera")
+                        .into(),
+                    vendor: scopes.as_deref().and_then(scope_vendor),
+                    kind: "onvif".into(),
+                    address: xaddr,
+                    capabilities: vec![
+                        "onvif-discovery".into(),
+                        "stream-profile-discovery".into(),
+                        "health-monitoring".into(),
+                    ],
+                    requires_manual_stream: true,
+                });
+            }
+        }
+        discovered
+    }
+
+    pub async fn test_connection(&self, request: ConnectionTestRequest) -> ConnectionTestResult {
+        let started = std::time::Instant::now();
+        let kind = request.kind.clone();
+        let result = match kind.as_str() {
+            "built-in-camera" => CameraWorker::start(self.fps),
+            "synthetic" => CameraWorker::start_synthetic(
+                request.options.width.unwrap_or(640),
+                request.options.height.unwrap_or(360),
+                request.options.fps.unwrap_or(self.fps),
+            ),
+            "image-sequence" | "video-file" => request
+                .options
+                .path
+                .clone()
+                .ok_or_else(|| SourceManagerError::Camera("video file source requires path".into()))
+                .and_then(|path| {
+                    CameraWorker::start_video_file(
+                        path,
+                        request.options.loop_playback.unwrap_or(true),
+                        request.options.width.unwrap_or(640),
+                        request.options.height.unwrap_or(360),
+                        request.options.fps.unwrap_or(self.fps),
+                    )
+                }),
+            "rtsp" => CameraWorker::start_rtsp(request.options.clone(), self.fps),
+            "mjpeg" => CameraWorker::start_mjpeg(request.options.clone(), self.fps),
+            "onvif" => Err(SourceManagerError::Unsupported(
+                "ONVIF requires a discovered stream profile".into(),
+            )),
+            other => Err(SourceManagerError::Unsupported(other.into())),
+        };
+        match result {
+            Ok(worker) => {
+                let frame = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    worker.frames.lock().await.recv().await
+                })
+                .await;
+                let worker = worker;
+                worker.stop();
+                match frame {
+                    Ok(Some(frame)) => ConnectionTestResult {
+                        success: true,
+                        source_type: kind,
+                        resolution: Some(format!("{}x{}", frame.width, frame.height)),
+                        fps: request.options.fps.unwrap_or(self.fps) as f64,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        message: "Connection succeeded and a frame was captured".into(),
+                    },
+                    Ok(None) => ConnectionTestResult {
+                        success: false,
+                        source_type: kind,
+                        resolution: None,
+                        fps: 0.0,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        message: "Source stopped before a frame was captured".into(),
+                    },
+                    Err(_) => ConnectionTestResult {
+                        success: false,
+                        source_type: kind,
+                        resolution: None,
+                        fps: 0.0,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        message: "Timed out waiting for the first frame".into(),
+                    },
+                }
+            }
+            Err(error) => ConnectionTestResult {
+                success: false,
+                source_type: kind,
+                resolution: None,
+                fps: 0.0,
+                latency_ms: started.elapsed().as_millis() as u64,
+                message: error.to_string(),
+            },
+        }
+    }
+
     pub async fn start(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
         let (kind, options) = {
             let mut sources = self.sources.write().await;
@@ -859,6 +1130,7 @@ impl VideoSourceManager {
                 options.fps.unwrap_or(self.fps),
             ),
             "rtsp" => CameraWorker::start_rtsp(options, self.fps),
+            "mjpeg" => CameraWorker::start_mjpeg(options, self.fps),
             other => return Err(SourceManagerError::Unsupported(other.into())),
         };
         match worker {
@@ -1000,6 +1272,10 @@ impl VideoSourceManager {
                     && self.active_source.read().await.as_deref() == Some(id)
                 {
                     self.rtsp.read().await.as_ref().map(|w| w.frames.clone())
+                } else if self.mjpeg.read().await.is_some()
+                    && self.active_source.read().await.as_deref() == Some(id)
+                {
+                    self.mjpeg.read().await.as_ref().map(|w| w.frames.clone())
                 } else {
                     None
                 }
@@ -1020,6 +1296,8 @@ impl VideoSourceManager {
                     *self.synthetic.write().await = Some(worker);
                 } else if kind.as_deref() == Some("rtsp") {
                     *self.rtsp.write().await = Some(worker);
+                } else if kind.as_deref() == Some("mjpeg") {
+                    *self.mjpeg.write().await = Some(worker);
                 } else {
                     *self.video_file.write().await = Some(worker);
                 }
@@ -1040,6 +1318,8 @@ impl VideoSourceManager {
                     self.synthetic.write().await.take()
                 } else if kind.as_deref() == Some("rtsp") {
                     self.rtsp.write().await.take()
+                } else if kind.as_deref() == Some("mjpeg") {
+                    self.mjpeg.write().await.take()
                 } else {
                     self.video_file.write().await.take()
                 }
@@ -1305,4 +1585,40 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn xml_value(document: &str, element: &str) -> Option<String> {
+    let namespaced_suffix = format!(":{element}");
+    document.split('<').skip(1).find_map(|part| {
+        let tag_end = part.find('>')?;
+        let tag = &part[..tag_end];
+        let tag_name = tag.split_whitespace().next().unwrap_or(tag);
+        if tag_name != element && !tag_name.ends_with(&namespaced_suffix) {
+            return None;
+        }
+        let tail = &part[tag_end + 1..];
+        let close = format!("</{tag_name}>");
+        let end = tail.find(&close)?;
+        Some(tail[..end].trim().to_string())
+    })
+}
+
+fn scope_name(scopes: &str) -> Option<&str> {
+    scopes
+        .split_whitespace()
+        .find_map(|scope| scope.strip_prefix("onvif://www.onvif.org/name/"))
+}
+
+fn scope_vendor(scopes: &str) -> Option<String> {
+    scopes
+        .split_whitespace()
+        .find_map(|scope| scope.strip_prefix("onvif://www.onvif.org/hardware/"))
+        .map(str::to_string)
+}
+
+fn stable_hash(value: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }

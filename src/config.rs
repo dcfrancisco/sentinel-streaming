@@ -24,6 +24,9 @@ pub struct Config {
 pub struct ConfiguredSource {
     pub id: String,
     pub name: Option<String>,
+    pub vendor: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
     #[serde(rename = "type")]
     pub kind: String,
     pub uri: Option<String>,
@@ -42,6 +45,9 @@ impl ConfiguredSource {
     pub fn options(&self) -> SourceOptions {
         SourceOptions {
             name: self.name.clone(),
+            vendor: self.vendor.clone(),
+            host: self.host.clone(),
+            port: self.port,
             path: self.path.clone(),
             uri: self.uri.clone(),
             transport: self.transport.clone(),
@@ -219,6 +225,9 @@ impl Default for Config {
             sources: vec![ConfiguredSource {
                 id: "builtin".into(),
                 name: Some("Built-in camera".into()),
+                vendor: None,
+                host: None,
+                port: None,
                 kind: "built-in-camera".into(),
                 uri: None,
                 path: None,
@@ -561,6 +570,9 @@ fn cli_source_config(source: &str) -> Result<ConfiguredSource, ConfigError> {
             kind.into()
         },
         name: None,
+        vendor: None,
+        host: None,
+        port: None,
         kind: kind.into(),
         uri: None,
         path: None,

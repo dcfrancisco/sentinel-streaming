@@ -17,6 +17,9 @@ belong in downstream products.
 | Image-sequence source | Implemented | Image file or directory playback with configurable FPS and looping. |
 | Video-file source | Implemented | MP4/video playback through FFmpeg with looping and real-time pacing. |
 | RTSP source | Implemented | RTSP/TCP ingestion and H.264-to-RGB decoding through FFmpeg. |
+| MJPEG source | Implemented | HTTP/MJPEG ingestion through the FFmpeg source boundary. |
+| Camera provider metadata | Implemented | Provider capabilities, discovery results, and test-connection API. |
+| ONVIF discovery | Implemented | WS-Discovery probe returns camera identity and stream-profile hints. |
 | Processing pipeline | Implemented | Every captured frame enters the shared pipeline. |
 | Frame buffer | Implemented | Bounded, thread-safe recent-frame store shared by consumers. |
 | JPEG preview | Implemented | Latest-frame preview endpoint. |
@@ -35,7 +38,7 @@ following capabilities are intentionally not implemented yet:
 - Persistent recording and evidence storage.
 - Ring-buffer persistence beyond process memory.
 - WebRTC, HLS, RTSP rebroadcast, or other production output protocols.
-- USB, ONVIF, and vendor-specific camera discovery or control.
+- Vendor-specific camera control and proprietary cloud integrations.
 - H.265-specific support.
 - AI alerts, intrusion detection, face recognition, object-detection policy, or
   automated security decisions.
@@ -82,6 +85,9 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 - `GET /api/v1/version`
 - `POST /api/v1/stop`
 - `GET /api/v1/sources`
+- `GET /api/v1/sources/providers`
+- `GET /api/v1/sources/discover`
+- `POST /api/v1/sources/test`
 - `POST /api/v1/sources`
 - `POST /api/v1/sources/{id}/start`
 - `POST /api/v1/sources/{id}/stop`
@@ -113,7 +119,8 @@ pipeline. Preview and buffering are enabled by default; recording remains a
 placeholder stage while Vision and Event Engine operate as frame-buffer
 consumers. The manager also supports a
 hardware-independent synthetic source, image-sequence source, video-file source,
-and RTSP source; USB and ONVIF remain future work. The latest captured frame is JPEG-encoded by the
+and RTSP source. USB/UVC cameras use the built-in camera provider; ONVIF discovery
+is available through WS-Discovery and returns stream-profile hints. The latest captured frame is JPEG-encoded by the
 preview stage and exposed at `/api/v1/preview`.
 
 The `VideoSourceManager` owns live source implementations. The pipeline consumes the manager through the `FrameProvider` abstraction and does not depend on concrete camera types. The `serve` runtime coordinates configuration, logging, metrics, source initialization, pipeline startup, HTTP serving, signal handling, and graceful shutdown.

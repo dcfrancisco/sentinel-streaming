@@ -32,6 +32,9 @@ in shell history, source files, or committed configuration.
 | POST | `/api/v1/stop` | Request graceful shutdown |
 | GET | `/api/v1/config` | Read-only effective configuration with secrets masked |
 | GET | `/api/v1/sources` | List registered sources |
+| GET | `/api/v1/sources/providers` | List camera provider capabilities |
+| GET | `/api/v1/sources/discover` | Discover local and configured cameras |
+| POST | `/api/v1/sources/test` | Test a source and capture one frame without registering it |
 | GET | `/api/v1/sources/{id}` | Source metadata and state |
 | POST | `/api/v1/sources` | Register a supported source definition |
 | POST | `/api/v1/sources/{id}/start` | Start a source |
@@ -48,6 +51,16 @@ in shell history, source files, or committed configuration.
 | GET | `/metrics` | Prometheus-compatible text metrics |
 
 Unsupported source adapters return `501 Not Implemented`.
+
+`/api/v1/sources/discover` includes existing sources, a hardware-free synthetic
+camera, and ONVIF WS-Discovery results when cameras respond on the local network.
+ONVIF discovery may return a device management address without a selected media
+profile; the Observatory must guide the operator through stream-profile setup.
+
+`POST /api/v1/sources/test` accepts the same source fields as source
+registration. It validates the connection, captures one frame, and returns
+resolution, FPS, latency, and a diagnostic message without storing credentials
+in the response.
 
 The configuration response includes the effective recovery policy. Recovery
 state is included in `/api/v1/status`; recovery events are returned by the

@@ -57,8 +57,9 @@ consistent.
 ### Video source boundary
 
 `VideoSourceManager` is the only owner of source registration and lifecycle.
-Built-in camera, synthetic, image-sequence, and RTSP adapters are functional.
-USB, ONVIF, and container decoding remain extension points. Every adapter
+Built-in camera, synthetic, image-sequence, video-file, RTSP, and MJPEG adapters
+are functional. USB/UVC uses the built-in camera provider, while ONVIF currently
+provides network discovery and stream-profile hints. Every adapter
 emits `Frame` values through the same manager-owned `FrameProvider`, so pipeline,
 buffer, MJPEG, Vision, and event consumers do not branch on source type.
 

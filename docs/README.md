@@ -14,6 +14,11 @@ platform component, not a complete security product.
 - [Observability](observability.md) — open-standard logs, metrics, tracing, and platform integration.
 - [Self-healing runtime](self-healing.md) — health states, recovery actions, events, and policies.
 - [Testing and validation](testing.md) — automated checks, runtime tests, and endurance plans.
+- [Human functional test guide](human-functional-test-guide.md) — step-by-step real hardware and network validation.
+- [Compatibility matrix](compatibility-matrix.md) — verified source and camera records.
+- [Test checklist](test-checklist.md) — reusable manual execution checklist.
+- [Troubleshooting](troubleshooting.md) — camera, network, codec, and recovery diagnosis.
+- [Camera certification process](camera-certification.md) — how to qualify new models and providers.
 - [Roadmap](roadmap.md) — completed milestones, current gaps, and planned work.
 - [Architecture decision records](adr/) — decisions that constrain future implementation.
 
