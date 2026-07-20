@@ -107,19 +107,23 @@ async fn serve(
     state.runtime.mark_pipeline_initialized().await;
     tracing::info!("pipeline initialized");
     let vision_task = if config.vision.enabled {
-        VisionScheduler::spawn(VisionJob {
-            buffer: frame_buffer.clone(),
-            state: state.vision.clone(),
-            metrics: state.vision_metrics.clone(),
-            selector: FrameSelector::new(config.vision.frames, config.vision.spacing_seconds),
-            interval_seconds: config.vision.interval_seconds,
-            shutdown: shutdown_tx.subscribe(),
-            events: state.events.clone(),
-            provider: std::sync::Arc::new(
-                OpenAiVisionProvider::from_env().expect("vision provider was checked above"),
-            ),
-            recovery: state.recovery.clone(),
-        })
+        match OpenAiVisionProvider::from_env() {
+            Some(provider) => VisionScheduler::spawn(VisionJob {
+                buffer: frame_buffer.clone(),
+                state: state.vision.clone(),
+                metrics: state.vision_metrics.clone(),
+                selector: FrameSelector::new(config.vision.frames, config.vision.spacing_seconds),
+                interval_seconds: config.vision.interval_seconds,
+                shutdown: shutdown_tx.subscribe(),
+                events: state.events.clone(),
+                provider: std::sync::Arc::new(provider),
+                recovery: state.recovery.clone(),
+            }),
+            None => {
+                tracing::warn!("OpenAI Vision disabled; OPENAI_API_KEY is unavailable");
+                None
+            }
+        }
     } else {
         tracing::info!("vision disabled by configuration");
         None

@@ -15,6 +15,7 @@ belong in downstream products.
 | Built-in camera | Implemented | Native macOS camera capture through Nokhwa. |
 | Synthetic source | Implemented | Hardware-free animated test source for demos, CI, and endurance testing. |
 | Image-sequence source | Implemented | Image file or directory playback with configurable FPS and looping. |
+| Video-file source | Implemented | MP4/video playback through FFmpeg with looping and real-time pacing. |
 | RTSP source | Implemented | RTSP/TCP ingestion and H.264-to-RGB decoding through FFmpeg. |
 | Processing pipeline | Implemented | Every captured frame enters the shared pipeline. |
 | Frame buffer | Implemented | Bounded, thread-safe recent-frame store shared by consumers. |
@@ -35,7 +36,6 @@ following capabilities are intentionally not implemented yet:
 - Ring-buffer persistence beyond process memory.
 - WebRTC, HLS, RTSP rebroadcast, or other production output protocols.
 - USB, ONVIF, and vendor-specific camera discovery or control.
-- MP4/MOV/MKV container decoding; the current file adapter is image-based.
 - H.265-specific support.
 - AI alerts, intrusion detection, face recognition, object-detection policy, or
   automated security decisions.
@@ -93,6 +93,7 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 - `GET /api/v1/events/{id}`
 - `GET /api/v1/events/stream` (Server-Sent Events)
 - `GET /api/v1/preview` (latest JPEG frame)
+- `GET /api/v1/streams/{source_id}/frame` (bounded JPEG capture for analysis)
 - `GET /api/v1/vision/latest`
 - `GET /api/v1/streams/{source_id}/mjpeg`
 
@@ -111,17 +112,17 @@ device index `0` by default; select another camera with
 pipeline. Preview and buffering are enabled by default; recording remains a
 placeholder stage while Vision and Event Engine operate as frame-buffer
 consumers. The manager also supports a
-hardware-independent synthetic source, image-sequence source, and RTSP source;
-USB, ONVIF, and container decoding remain future work. The latest captured frame is JPEG-encoded by the
+hardware-independent synthetic source, image-sequence source, video-file source,
+and RTSP source; USB and ONVIF remain future work. The latest captured frame is JPEG-encoded by the
 preview stage and exposed at `/api/v1/preview`.
 
 The `VideoSourceManager` owns live source implementations. The pipeline consumes the manager through the `FrameProvider` abstraction and does not depend on concrete camera types. The `serve` runtime coordinates configuration, logging, metrics, source initialization, pipeline startup, HTTP serving, signal handling, and graceful shutdown.
 
 The manager now owns source lifecycle and runtime metadata for built-in, synthetic,
-and image-sequence video-file sources. Start a camera-free server with
+video-file, image-sequence, and RTSP sources. Start a camera-free server with
 `cargo run -- serve --source synthetic`, or register a source through
-`POST /api/v1/sources` using `kind: synthetic`, `kind: image-sequence`, or
-`kind: rtsp`. All source types use the same frame provider, pipeline, frame
+`POST /api/v1/sources` using `kind: synthetic`, `kind: video-file`,
+`kind: image-sequence`, or `kind: rtsp`. All source types use the same frame provider, pipeline, frame
 buffer, MJPEG, metrics, and health paths. RTSP requires an FFmpeg executable;
 set `SENTINEL_FFMPEG` when it is not available on `PATH`.
 

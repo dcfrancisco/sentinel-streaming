@@ -7,6 +7,7 @@ platform component, not a complete security product.
 ## Documentation map
 
 - [Architecture](architecture.md) — runtime, module boundaries, data flow, and invariants.
+- [Technical design](technical-design.md) — source adapters, frame capture, and runtime contracts.
 - [Administration API](api.md) — REST, MJPEG, SSE, authentication, and CLI behavior.
 - [Configuration](configuration.md) — YAML, environment, CLI precedence, and validation.
 - [Operations](operations.md) — deployment, camera permissions, startup, shutdown, and observability.
@@ -22,11 +23,12 @@ The current implementation provides:
 
 - A single headless `serve` runtime.
 - A built-in camera source through Nokhwa.
-- Synthetic, image-sequence, and RTSP/TCP source adapters through the same boundary.
+- Synthetic, image-sequence, video-file, and RTSP/TCP source adapters through the same boundary.
 - A manager-owned source lifecycle.
 - A single processing pipeline for captured frames.
 - A bounded in-memory `FrameBuffer`.
 - JPEG preview and live MJPEG diagnostics.
+- Bounded single-frame JPEG capture for downstream observation analysis.
 - Health, status, source, event, vision, metrics, and shutdown APIs.
 - An API-backed CLI.
 - Optional temporal scene observation through the OpenAI Responses API.
