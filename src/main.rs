@@ -102,6 +102,7 @@ async fn serve(
     if started_source.is_none() {
         return Err(anyhow::anyhow!("configuration has no enabled video source"));
     }
+    let health_task = state.sources.spawn_health_monitor();
     let mut pipeline_config = config.pipeline.clone();
     pipeline_config.buffer = config.buffer.enabled;
     state.runtime.mark_pipeline_initialized().await;
@@ -178,6 +179,10 @@ async fn serve(
     }
     let _ = server_task.await;
     let _ = pipeline_task.await;
+    state.sources.shutdown_media_gateway().await;
+    if let Some(task) = health_task {
+        let _ = task.await;
+    }
     if let Some(task) = vision_task {
         let _ = task.await;
     }

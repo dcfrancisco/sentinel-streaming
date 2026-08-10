@@ -1,0 +1,7 @@
+# Development-only MediaMTX configuration for the local RTSP fixture.
+# It permits dynamically named test paths without changing production config.
+api: yes
+apiAddress: :9997
+
+paths:
+  all:

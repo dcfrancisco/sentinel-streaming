@@ -83,3 +83,79 @@ The repeatable short-run baseline is:
 cargo run -- endurance --duration 2s --source synthetic \
   --viewers 5 --vision mock --report /tmp/endurance-report.json
 ```
+
+## SS-WP-003 RTSP validation tests
+
+The RTSP validation tests are deterministic and do not require a physical
+camera, FFmpeg, MediaMTX, Docker, or a local listening socket. They use an
+injectable protocol backend to cover successful validation, authentication
+failure, missing stream, unreachable source, bounded timeout, malformed source,
+source health transitions, API wiring, and credential redaction.
+
+These are unit/protocol/integration tests. They are not physical-device tests
+and do not claim sustained decoded media, audio, or browser playback.
+
+## SS-WP-005 ONVIF tests
+
+The ONVIF test fixtures are deterministic emulator/protocol tests. They cover
+device discovery, empty discovery, timeout/authentication/malformed-response
+categories, device and profile normalization, multiple profiles, RTSP URI
+redaction, PTZ-supported and fixed-camera capability results, and handoff to
+the existing RTSP validator. They are not physical-camera tests.
+
+## SS-WP-004 health and recovery tests
+
+The same deterministic suite also covers automatic recovery after a retryable
+failure, no retry for authentication failure, and bounded concurrent health
+checks. The injected backend is a protocol fixture; these tests are classified
+as unit/protocol/integration tests and are not physical-camera verification.
+
+## SS-WP-006 PTZ tests
+
+The PTZ tests use the deterministic ONVIF emulator/protocol fixture. They
+verify continuous, relative, absolute, stop, zoom, preset listing, and
+go-to-preset SOAP operation receipt, capability rejection for fixed cameras,
+failure propagation, credential/profile-token redaction, correlation-bearing
+events, and RTSP/source-session integration. They are emulator/protocol tests,
+not physical-device validation.
+
+## SS-WP-007 media gateway tests
+
+MediaGateway tests use deterministic fake gateway fixtures and adapter-level
+URL generation. They cover validated-source registration, removal, gateway
+unavailability, registration failure, normalized WebRTC/HLS playback, safe
+source paths, credential redaction, separate camera/media health, and shutdown
+reconciliation. They do not require Docker or a real MediaMTX process.
+
+### LOCAL_MEDIAMTX_INTEGRATION — SS-WP-007A
+
+This classification uses a real locally running MediaMTX process plus the
+project-local FFmpeg `testsrc2` publisher. It verifies RTSP input, MediaMTX
+registration, normalized WebRTC/HLS playback endpoints, MediaMTX failure, and
+restart/re-registration behavior. The strongest acceptance check is opening
+`/admin` and seeing moving video. It is not a physical-device test.
+
+The pinned macOS x86_64 verification command is documented in
+`docs/MEDIAMTX.md`. The test source does not yet provide ONVIF, PTZ, scenarios,
+audio, or synchronized A/V.
+
+This evidence is recorded as `LOCAL_MEDIAMTX_INTEGRATION`; it does not certify
+any physical camera vendor, model, or firmware combination.
+
+## SS-WP-008 onboarding tests
+
+Onboarding unit coverage verifies discovery-session creation, automatic
+selection of the highest-scoring usable H.264 profile, and redaction of
+credentials/profile tokens from the session response. The full browser flow
+still requires a local ONVIF/RTSP fixture or physical camera and is not physical
+device certification by itself.
+
+## SS-WP-009 security tests
+
+Security unit coverage verifies cumulative role authorities, PTZ denial without
+`CONTROL_PTZ`, PTZ allowance for an Operator principal, and credential-safe
+serialization/debug boundaries. API middleware uses deterministic bearer-token
+configuration and emits normalized authentication/authorization events.
+These tests are local unit/API tests, not an enterprise identity or physical
+deployment certification. Direct MediaMTX authorization remains a documented
+deployment boundary.

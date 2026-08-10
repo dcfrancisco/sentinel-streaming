@@ -1,17 +1,24 @@
 # Sentinel Streaming
 
-Sentinel Streaming is a headless video infrastructure service for the Sentinel Platform. It acquires video, processes every frame through one extensible pipeline, exposes operational APIs, and provides browser diagnostics and optional AI scene understanding.
+Sentinel Streaming is a standalone and embeddable video streaming platform for
+discovering, connecting, controlling, monitoring, and delivering IP camera
+streams through web-friendly APIs and interfaces. It can run as a standalone
+web-accessible product with its own setup and live-view experience, or as a
+streaming service consumed by Sentinel Home, Campus, Buildings, and other
+clients.
 
-It is designed as a reusable platform component for edge devices, home servers,
-and future distributed deployments. Sentinel Streaming observes and transports
-video; product-specific policy, alarms, notifications, and identity workflows
-belong in downstream products.
+It is designed as a commercial platform component for edge devices, standalone
+deployments, and larger distributed architectures. Sentinel Streaming owns
+camera integration, media delivery, stream health, recovery, operational APIs,
+and administration. Product-specific policy, alarms, notifications, and domain
+workflows belong in downstream products.
 
 ## Product capabilities
 
 | Capability | Status | Description |
 | --- | --- | --- |
-| Headless daemon | Implemented | Long-running Rust service with structured logging and graceful shutdown. |
+| Rust streaming daemon | Implemented | Long-running service with structured logging and graceful shutdown. |
+| Admin/setup web console | Implemented foundation | Sentinel Streaming-owned console for discovery, validation, health, and PTZ testing. |
 | Built-in camera | Implemented | Native macOS camera capture through Nokhwa. |
 | Synthetic source | Implemented | Hardware-free animated test source for demos, CI, and endurance testing. |
 | Image-sequence source | Implemented | Image file or directory playback with configurable FPS and looping. |
@@ -19,7 +26,9 @@ belong in downstream products.
 | RTSP source | Implemented | RTSP/TCP ingestion and H.264-to-RGB decoding through FFmpeg. |
 | MJPEG source | Implemented | HTTP/MJPEG ingestion through the FFmpeg source boundary. |
 | Camera provider metadata | Implemented | Provider capabilities, discovery results, and test-connection API. |
-| ONVIF discovery | Implemented | WS-Discovery probe returns camera identity and stream-profile hints. |
+| ONVIF and capability-driven PTZ | Implemented | WS-Discovery, SOAP profile inspection, normalized capabilities, and gated PTZ control. |
+| MediaGateway / MediaMTX browser playback | Implemented foundation | Validated RTSP registration, normalized WebRTC/HLS playback, separate media health, and admin live view. |
+| Local MediaMTX verification | Development tooling | FFmpeg moving RTSP test source and Docker-free local integration runbook; not production deployment or physical-camera certification. |
 | Processing pipeline | Implemented | Every captured frame enters the shared pipeline. |
 | Frame buffer | Implemented | Bounded, thread-safe recent-frame store shared by consumers. |
 | JPEG preview | Implemented | Latest-frame preview endpoint. |
@@ -37,12 +46,15 @@ following capabilities are intentionally not implemented yet:
 
 - Persistent recording and evidence storage.
 - Ring-buffer persistence beyond process memory.
-- WebRTC, HLS, RTSP rebroadcast, or other production output protocols.
-- Vendor-specific camera control and proprietary cloud integrations.
+- Production-grade media supervision, browser compatibility certification, and
+  automated MediaMTX orchestration beyond the verified local integration slice.
+- Proprietary vendor-specific camera control and cloud integrations.
+- Physical-camera PTZ/media certification and vendor-specific ONVIF extensions.
 - H.265-specific support.
 - AI alerts, intrusion detection, face recognition, object-detection policy, or
   automated security decisions.
 - Notifications, user management, Sentinel Home integration, and product policy.
+- Sentinel Home, Sentinel Campus, and Sentinel Buildings frontends or domain workflows.
 - Distributed clustering and multi-node coordination.
 
 Vision is observation only. If `OPENAI_API_KEY` is unavailable, the service
@@ -76,6 +88,35 @@ For repeatable deployments, place configuration in `sentinel.yaml` or pass
 schema and precedence rules.
 
 ## Administration
+
+The administration surface is an infrastructure setup and operations console,
+not a homeowner, campus, or building surveillance product. Its planned guided
+camera flow is: discover camera, select device, provide credentials, discover
+capabilities, verify connectivity and playback, preview video, name the camera,
+and save. Manual RTSP configuration remains available under an Advanced path.
+
+See [docs/admin-console.md](docs/admin-console.md) for the target console
+experience.
+
+Protected deployments use bearer roles configured with environment tokens;
+see [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) and
+[docs/SECURITY.md](docs/SECURITY.md).
+
+PTZ control is exposed only for inspected sources whose normalized ONVIF
+capabilities advertise the requested operation. See [docs/PTZ.md](docs/PTZ.md)
+and [docs/SECURITY.md](docs/SECURITY.md). Sentinel Streaming supports pluggable
+persistence; SQLite is an optional embedded backend for standalone deployments,
+not a mandatory runtime dependency.
+
+MediaMTX is optional. Without it, Sentinel continues RTSP, ONVIF, PTZ, and
+health operations while browser playback reports normalized media-gateway
+unavailability.
+
+For real local playback verification, see [docs/MEDIAMTX.md](docs/MEDIAMTX.md)
+and run the development-only [RTSP test source](tools/rtsp-test-source/README.md).
+
+Commercial readiness status and quality gates are tracked in
+[docs/COMMERCIAL_READINESS.md](docs/COMMERCIAL_READINESS.md).
 
 Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` by default and exposes:
 
@@ -217,6 +258,15 @@ Stop a running release server gracefully from another terminal:
 ./target/release/sentinel-streaming stop \
   --endpoint http://127.0.0.1:8081/api/v1/stop
 ```
+
+## Acknowledgements
+
+Special thanks to Eric Son for practical engineering feedback that influenced
+Sentinel Streaming's MediaMTX/browser-streaming direction, ONVIF
+capability-driven PTZ, camera onboarding priorities, and real-device
+interoperability strategy.
+
+See [ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md) for full credits.
 
 ## License
 

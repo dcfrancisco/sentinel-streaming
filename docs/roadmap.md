@@ -1,142 +1,98 @@
-# Roadmap
+# Product roadmap
 
-## Completed milestones
+Sentinel Streaming is a commercial standalone and embeddable video streaming
+platform. It owns camera integration, media delivery, stream health/recovery,
+operational APIs, and its own setup/operations console. Sentinel Home, Campus,
+and Buildings remain separate domain applications.
 
-### Milestone 1 — Streaming foundation
+## Completed baseline
 
-- Headless Rust daemon.
-- Built-in camera acquisition.
-- Frame abstraction and JPEG preview.
-- REST health, status, version, and metrics foundations.
-- CLI foundation.
+- Rust runtime, source manager, shared frame pipeline, bounded frame buffer,
+  preview, MJPEG, events, metrics, and graceful shutdown.
+- SS-WP-003: RTSP OPTIONS/DESCRIBE validation, normalized failures, source
+  health, API/admin validation, and credential safety.
+- SS-WP-004: HealthMonitor, bounded RecoveryEngine, capped backoff, retry policy,
+  recovery history, and shutdown integration.
+- SS-WP-005: ONVIF WS-Discovery, device/media inspection, profile and RTSP URI
+  retrieval, normalized capabilities, and deterministic emulator coverage.
+- SS-WP-006: capability-driven PTZ movement, stop, zoom, presets, authority,
+  evidence, correlation, emulator verification, and admin controls.
+- SS-WP-007: MediaGateway, MediaMtxAdapter, validated source registration,
+  normalized WebRTC/HLS playback, separate media health, and admin live view.
+- SS-WP-007A: real local MediaMTX v1.20.0 plus deterministic FFmpeg RTSP source;
+  registration, WHEP/HLS endpoints, browser moving-video acceptance, failure,
+  restart, and re-registration evidence.
 
-### Milestone 2 — Processing pipeline and runtime
+## Current product roadmap
 
-- Single frame-processing pipeline.
-- Preview stage and placeholder stages.
-- Central application state.
-- Graceful shutdown.
-- Video source manager and lifecycle metadata.
+### SS-WP-008 — Zero-friction camera onboarding
 
-### Milestone 4 — Ring buffer
+Discover, select, authenticate only when required, inspect capabilities, select a
+usable media profile automatically, validate RTSP, register media delivery,
+preview in the browser, test PTZ when supported, assign name/location, and
+report readiness. Manual RTSP remains an Advanced path.
 
-- Bounded thread-safe `FrameBuffer`.
-- Recent-frame and sequence access.
-- Preview and higher-level consumers read buffered frames.
+### SS-WP-009 — Authentication, roles, secrets, and playback security
 
-### Milestone 5 — Video source manager
+Add product-grade operator/admin roles, secret handling, TLS deployment guidance,
+secure playback access, audit policy, correlation, and rate limiting where
+justified.
 
-- Source registration and lifecycle API.
-- Built-in source start/stop/restart.
-- Source state, frame counts, FPS, uptime, and reconnect metadata.
+### SS-WP-010 — Media telemetry and stream supervision
 
-### Milestone 6 — Vision engine
+Add codec, resolution, FPS, bitrate, delivery-state telemetry, watchdogs,
+degraded-media detection, and bounded media recovery/re-registration.
 
-- Provider abstraction.
-- OpenAI Responses API provider.
-- Optional startup when the API key is absent.
-- Temporal frame selection and scene observations.
+### SS-WP-011 — Physical-camera interoperability and certification
 
-### Milestone 7 — Event engine
+Build a vendor/model/firmware compatibility harness and certify ONVIF, RTSP,
+audio, PTZ, presets, browser playback, reconnect, recovery, and long-running
+behavior against real devices.
 
-- Strongly typed event records.
-- Bounded event store.
-- Source and Vision events.
-- REST event lookup and SSE event feed.
+### SS-WP-012 — Snapshot/recording foundation
 
-### Milestone 8 — MJPEG diagnostics
+Add only if product requirements justify it, behind explicit storage and
+retention boundaries.
 
-- Multipart MJPEG endpoint.
-- Multiple viewers.
-- Stream metrics and disconnect handling.
+### SS-WP-013 — Audio transport and support
 
-### Milestone 9 — Runtime reliability and test foundation
+Add camera-compatible audio transport and validation separately from future audio
+intelligence.
 
-- Clean format, check, test, and Clippy gates with warnings denied.
-- Continuous camera reconnect with bounded exponential backoff, jitter, state,
-  attempt count, and downtime reporting.
-- Cross-platform Unix process CPU and resident-memory metrics.
-- Frame-buffer size, capacity, utilization, and eviction metrics.
-- MJPEG byte-rate metrics.
+### SS-WP-014 — Standalone packaging and service installation
 
-### Milestone 11 — Virtual video sources
+Provide supported-machine packaging, local service installation, configuration
+validation, update instructions, and deployment profiles without mandatory
+Docker.
 
-- Synthetic animated test-pattern source with configurable resolution and FPS.
-- Image and image-sequence video-file adapter with looping and playback FPS.
-- Manager/API/CLI integration through the existing `FrameProvider` boundary.
-- Camera-free tests and sample-asset guidance under `samples/`.
+### SS-WP-015 — Operational observability and diagnostics bundle
 
-Container decoding such as MP4 remains a follow-up backend decision; it must be
-added behind `VideoSource` without changing the pipeline or consumers.
+Add operator-facing diagnostics, support-bundle export, structured logs, metrics,
+failure attribution, and actionable health/readiness reporting.
 
-### Milestone 12 — RTSP source
+### SS-WP-016 — Long-duration stability and soak testing
 
-- RTSP/TCP ingestion through the manager-owned source boundary.
-- FFmpeg-backed H.264 decode to RGB frames.
-- Environment-backed credentials and reconnect lifecycle.
-- Local MediaMTX/FFmpeg validation remains an operator test profile because the
-  binaries are not required to compile or run synthetic tests.
-- Hardware-independent integration tests for REST, MJPEG, events, and mock Vision.
-- Synthetic endurance command with machine-readable JSON reports.
+Track 24-hour, 72-hour, and 7-day tests across source, MediaGateway, browser
+delivery, recovery, resource usage, and representative physical cameras.
 
-### Milestone 10 — Self-healing runtime
+### SS-WP-017 — Upgrade, migration, versioning, and compatibility policy
 
-- Component health monitor with healthy, degraded, recovering, and failed states.
-- Recovery engine with structured events and recovery metrics.
-- Continuous camera recovery with observable retry attempts.
-- Supervised pipeline restart after processing failure.
-- Vision recovery state tracking while preserving provider isolation.
-- MJPEG client cleanup through independent stream ownership.
+Define semantic/versioned releases, `/api/v1` compatibility guarantees,
+configuration migration, persistence migration, deprecation, and rollback policy.
 
-Remaining hardening includes full Vision retry/cooldown policy enforcement,
-stalled-client timeout cleanup, and a persistent recovery supervisor for future
-multi-process deployments.
+### SS-WP-018 — Commercial readiness review and certification
 
-## Current hardening priorities
+Review CR-1 through CR-10, publish evidence by testing class, identify release
+blockers, and certify the supported deployment/camera matrix.
 
-1. Add continuous reconnect retry with bounded exponential backoff and clear
-   source state transitions.
-2. Add API integration tests and a repeatable camera-free test source.
-3. Add CPU, portable memory, frame-buffer occupancy, and network bandwidth
-   metrics.
-4. Make health readiness reflect source and pipeline state precisely.
-5. Remove or narrowly annotate intentional dead-code warnings so Clippy can be a
-   release gate.
-6. Add service-manager packaging and restart policy examples for macOS/Linux.
-7. Add structured configuration validation and broader environment coverage.
-8. Add endurance and recovery test tooling.
-9. Add correlation IDs and OpenTelemetry spans without coupling the runtime to a
-   specific observability vendor.
+## Virtual camera lab backlog
 
-## Future capabilities
+Future project-local tooling may provide a generated RTSP source, ONVIF device and
+media services, PTZ-capable and fixed-camera personalities, visible virtual PTZ,
+presets, authentication modes, failure injection, audio, and deterministic AI
+scenarios. Keep fast in-process fixtures, standalone emulator tooling, and
+physical-device certification as separate evidence classes. Do not implement the
+full lab outside an explicitly started work package.
 
-### Sources
-
-- USB camera adapter.
-- ONVIF discovery and control.
-- MP4/MOV/MKV container decoding behind `VideoFileSource`.
-
-### Processing and storage
-
-- Ring-buffer persistence options.
-- Recording stage.
-- Snapshot API.
-- Motion and scene-change stages.
-
-### Vision and events
-
-- Provider implementations for Qwen-VL, Gemini, Ollama, and OIP.
-- Provider timeouts, retries, circuit breakers, and cost controls.
-- Event retention policies and durable event storage.
-- WebSocket event transport.
-
-### Streaming protocols and platform integration
-
-- WebRTC.
-- HLS or other production delivery protocols.
-- Authentication and profile hardening.
-- Sentinel Home integration.
-- Multi-source and clustered deployment support.
-
-Future features must preserve the source-manager, pipeline, and frame-buffer
-boundaries established by the architecture.
+AI/video intelligence remains a future capability area, but streaming reliability,
+setup, security, interoperability, and operations take priority.

@@ -1,9 +1,24 @@
 use crate::{
     config::ReconnectConfig,
     errors::SourceError,
-    events::{Event, EventBus},
+    events::{Event, EventBus, EventRecord},
     frame::Frame,
+    media::{
+        MediaDeliveryHealth, MediaGateway, MediaGatewayStatus, MediaMtxAdapter,
+        MediaSourceRegistration, PlaybackInfo,
+    },
+    onboarding::{
+        check, OnboardingCompletion, OnboardingDraft, OnboardingFailure, OnboardingSessionView,
+    },
+    onvif::{
+        CameraCapabilities, MediaProfile, OnvifClient, OnvifDevice, OnvifDiscoveryRequest,
+        OnvifInspectRequest, PtzCapabilities, PtzMoveMode, PtzMoveRequest, PtzOperation,
+        PtzOperationResult, PtzPreset, PtzResponse, PtzSession,
+    },
     recovery::RecoveryEngine,
+    rtsp::{
+        RtspFailure, RtspFailureCode, RtspValidationRequest, RtspValidationResult, RtspValidator,
+    },
 };
 use async_trait::async_trait;
 use nokhwa::{
@@ -13,16 +28,20 @@ use nokhwa::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fmt, fs,
     io::Read,
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::{mpsc, Arc},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc as tokio_mpsc, watch, Mutex, RwLock};
+use tokio::sync::{mpsc as tokio_mpsc, watch, Mutex, RwLock, Semaphore};
+use tokio::task::JoinHandle;
 
 #[allow(dead_code)]
 #[async_trait(?Send)]
@@ -87,7 +106,7 @@ pub struct UsbCamera;
 #[allow(dead_code)]
 pub struct RtspCamera;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct RtspCredentials {
     pub username_env: Option<String>,
     pub password_env: Option<String>,
@@ -96,12 +115,24 @@ pub struct RtspCredentials {
     #[serde(skip_serializing)]
     pub password: Option<String>,
 }
+
+impl std::fmt::Debug for RtspCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RtspCredentials")
+            .field("username_env", &self.username_env)
+            .field("password_env", &self.password_env)
+            .field("username", &self.username.as_ref().map(|_| "[REDACTED]"))
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
 #[allow(dead_code)]
 pub struct OnvifCamera;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct SourceOptions {
     pub name: Option<String>,
+    pub location: Option<String>,
     pub vendor: Option<String>,
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -114,6 +145,25 @@ pub struct SourceOptions {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub fps: Option<u32>,
+}
+
+impl std::fmt::Debug for SourceOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceOptions")
+            .field("name", &self.name)
+            .field("location", &self.location)
+            .field("vendor", &self.vendor)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("path", &self.path)
+            .field(
+                "uri",
+                &self.uri.as_deref().map(crate::config::redact_uri_for_debug),
+            )
+            .field("transport", &self.transport)
+            .field("credentials", &self.credentials)
+            .finish()
+    }
 }
 
 pub struct SyntheticSource {
@@ -442,6 +492,42 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
+fn profile_score(profile: &MediaProfile) -> (u8, u32, u32, u32) {
+    let h264 = u8::from(
+        profile
+            .encoding
+            .as_deref()
+            .map(|encoding| encoding.to_ascii_lowercase().contains("264"))
+            .unwrap_or(false),
+    );
+    let (width, height): (u32, u32) = profile
+        .resolution
+        .as_deref()
+        .and_then(|value| value.split_once('x'))
+        .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
+        .unwrap_or((0, 0));
+    (
+        h264,
+        width.saturating_mul(height),
+        profile.frame_rate.unwrap_or(0.0) as u32,
+        u32::from(profile.audio),
+    )
+}
+
+fn rtsp_user_message(code: &RtspFailureCode) -> &'static str {
+    match code {
+        RtspFailureCode::AuthenticationFailed => "Camera rejected the supplied credentials.",
+        RtspFailureCode::SourceUnreachable => "Camera is unreachable.",
+        RtspFailureCode::StreamNotFound => "RTSP stream was not found.",
+        RtspFailureCode::ConnectionTimeout => "Connection to the camera timed out.",
+        RtspFailureCode::InvalidSource => "The camera source configuration is invalid.",
+        RtspFailureCode::UnsupportedSource => "This camera source is not supported.",
+        RtspFailureCode::ProtocolError | RtspFailureCode::Unknown => {
+            "Camera returned an unexpected RTSP response."
+        }
+    }
+}
+
 #[async_trait]
 pub trait FrameProvider: Send {
     async fn next_frame(&mut self) -> Result<Frame, SourceError>;
@@ -458,10 +544,34 @@ pub enum SourceState {
     Disconnected,
     Reconnecting,
 }
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ValidationState {
+    Unknown,
+    Validating,
+    Validated,
+    Failed,
+}
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamHealth {
+    Unknown,
+    Healthy,
+    Degraded,
+    Unhealthy,
+}
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecoveryState {
+    Idle,
+    Recovering,
+    Exhausted,
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct SourceInfo {
     pub id: String,
     pub name: String,
+    pub location: Option<String>,
     #[serde(rename = "type")]
     pub kind: String,
     pub status: SourceState,
@@ -479,6 +589,20 @@ pub struct SourceInfo {
     pub disconnects: u64,
     pub decode_failures: u64,
     pub last_failure_category: Option<String>,
+    pub validation: ValidationState,
+    pub health: StreamHealth,
+    pub last_validation_attempt: Option<u128>,
+    pub last_successful_validation: Option<u128>,
+    pub last_validation_failure: Option<RtspFailure>,
+    pub consecutive_validation_failures: u64,
+    pub recovery: RecoveryState,
+    pub recovery_attempts: u32,
+    pub last_recovery_started: Option<u128>,
+    pub last_recovery_succeeded: Option<u128>,
+    pub last_recovery_exhausted: Option<u128>,
+    pub next_recovery_at: Option<u128>,
+    pub capabilities: Option<CameraCapabilities>,
+    pub media_health: MediaDeliveryHealth,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct AddSource {
@@ -527,12 +651,20 @@ pub struct ConnectionTestResult {
     pub message: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct PtzAuditContext {
+    pub actor: String,
+    pub correlation_id: String,
+}
+
 struct SourceEntry {
     info: SourceInfo,
     desired_running: bool,
     started_at: Option<std::time::Instant>,
     disconnected_at: Option<std::time::Instant>,
     options: SourceOptions,
+    ptz_session: Option<PtzSession>,
+    ptz_presets: BTreeMap<String, String>,
 }
 
 struct CameraWorker {
@@ -735,6 +867,11 @@ pub enum SourceManagerError {
     AlreadyExists,
     Unsupported(String),
     Camera(String),
+    Onvif(String),
+    MediaGateway(String),
+    PtzNotSupported,
+    PtzOperationUnsupported(String),
+    InvalidRequest(String),
 }
 impl fmt::Display for SourceManagerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -743,6 +880,14 @@ impl fmt::Display for SourceManagerError {
             Self::AlreadyExists => f.write_str("source already exists"),
             Self::Unsupported(kind) => write!(f, "source type '{kind}' is not implemented"),
             Self::Camera(error) => f.write_str(error),
+            Self::Onvif(error) => f.write_str(error),
+            Self::MediaGateway(error) => f.write_str(error),
+            Self::PtzNotSupported => f.write_str("PTZ is not supported by this source"),
+            Self::PtzOperationUnsupported(operation) => write!(
+                f,
+                "PTZ operation '{operation}' is not supported by this source"
+            ),
+            Self::InvalidRequest(error) => f.write_str(error),
         }
     }
 }
@@ -761,6 +906,15 @@ pub struct VideoSourceManager {
     reconnect: ReconnectConfig,
     shutdown: watch::Receiver<bool>,
     recovery: RecoveryEngine,
+    validation_timeout: Duration,
+    validator: RtspValidator,
+    onvif: OnvifClient,
+    media_gateway: Arc<dyn MediaGateway>,
+    health_config: crate::config::HealthConfig,
+    health_semaphore: Arc<Semaphore>,
+    health_inflight: Arc<Mutex<HashSet<String>>>,
+    onboarding: Arc<RwLock<BTreeMap<String, OnboardingDraft>>>,
+    next_onboarding_id: Arc<AtomicU64>,
 }
 impl VideoSourceManager {
     pub fn new(
@@ -773,6 +927,7 @@ impl VideoSourceManager {
         let info = SourceInfo {
             id: "builtin".into(),
             name: "Built-in camera".into(),
+            location: None,
             kind: "built-in-camera".into(),
             status: SourceState::Stopped,
             resolution: None,
@@ -789,6 +944,20 @@ impl VideoSourceManager {
             disconnects: 0,
             decode_failures: 0,
             last_failure_category: None,
+            validation: ValidationState::Unknown,
+            health: StreamHealth::Unknown,
+            last_validation_attempt: None,
+            last_successful_validation: None,
+            last_validation_failure: None,
+            consecutive_validation_failures: 0,
+            recovery: RecoveryState::Idle,
+            recovery_attempts: 0,
+            last_recovery_started: None,
+            last_recovery_succeeded: None,
+            last_recovery_exhausted: None,
+            next_recovery_at: None,
+            capabilities: None,
+            media_health: MediaDeliveryHealth::Unknown,
         };
         let mut sources = BTreeMap::new();
         sources.insert(
@@ -799,6 +968,8 @@ impl VideoSourceManager {
                 started_at: None,
                 disconnected_at: None,
                 options: SourceOptions::default(),
+                ptz_session: None,
+                ptz_presets: BTreeMap::new(),
             },
         );
         Self {
@@ -814,7 +985,45 @@ impl VideoSourceManager {
             reconnect,
             shutdown,
             recovery,
+            validation_timeout: Duration::from_secs(5),
+            validator: RtspValidator::default(),
+            onvif: OnvifClient::default(),
+            media_gateway: Arc::new(MediaMtxAdapter::new(
+                false,
+                None,
+                None,
+                None,
+                None,
+                Duration::from_secs(3),
+            )),
+            health_config: crate::config::HealthConfig::default(),
+            health_semaphore: Arc::new(Semaphore::new(4)),
+            health_inflight: Arc::new(Mutex::new(HashSet::new())),
+            onboarding: Arc::new(RwLock::new(BTreeMap::new())),
+            next_onboarding_id: Arc::new(AtomicU64::new(1)),
         }
+    }
+    pub fn with_validation_timeout(mut self, timeout: Duration) -> Self {
+        self.validation_timeout = timeout.max(Duration::from_millis(1));
+        self.validator = RtspValidator::new(self.validation_timeout);
+        self
+    }
+    pub fn with_validator(mut self, validator: RtspValidator) -> Self {
+        self.validator = validator;
+        self
+    }
+    pub fn with_onvif_client(mut self, onvif: OnvifClient) -> Self {
+        self.onvif = onvif;
+        self
+    }
+    pub fn with_media_gateway(mut self, media_gateway: Arc<dyn MediaGateway>) -> Self {
+        self.media_gateway = media_gateway;
+        self
+    }
+    pub fn with_health_config(mut self, config: crate::config::HealthConfig) -> Self {
+        self.health_semaphore = Arc::new(Semaphore::new(config.max_concurrent_checks.max(1)));
+        self.health_config = config;
+        self
     }
     pub async fn list(&self) -> Vec<SourceInfo> {
         self.sources
@@ -862,6 +1071,7 @@ impl VideoSourceManager {
                 .name
                 .clone()
                 .unwrap_or_else(|| request.id.clone()),
+            location: request.options.location.clone(),
             kind: request.kind,
             status: SourceState::Stopped,
             resolution: None,
@@ -878,6 +1088,20 @@ impl VideoSourceManager {
             disconnects: 0,
             decode_failures: 0,
             last_failure_category: None,
+            validation: ValidationState::Unknown,
+            health: StreamHealth::Unknown,
+            last_validation_attempt: None,
+            last_successful_validation: None,
+            last_validation_failure: None,
+            consecutive_validation_failures: 0,
+            recovery: RecoveryState::Idle,
+            recovery_attempts: 0,
+            last_recovery_started: None,
+            last_recovery_succeeded: None,
+            last_recovery_exhausted: None,
+            next_recovery_at: None,
+            capabilities: None,
+            media_health: MediaDeliveryHealth::Unknown,
         };
         sources.insert(
             request.id,
@@ -887,9 +1111,1009 @@ impl VideoSourceManager {
                 started_at: None,
                 disconnected_at: None,
                 options: request.options,
+                ptz_session: None,
+                ptz_presets: BTreeMap::new(),
             },
         );
         Ok(info)
+    }
+
+    pub async fn onvif_discover(
+        &self,
+        request: OnvifDiscoveryRequest,
+    ) -> Result<Vec<OnvifDevice>, SourceManagerError> {
+        self.onvif
+            .discover(&request)
+            .await
+            .map_err(|error| SourceManagerError::Onvif(error.to_string()))
+    }
+
+    pub async fn onboarding_discover(
+        &self,
+        request: OnvifDiscoveryRequest,
+    ) -> Result<OnboardingSessionView, SourceManagerError> {
+        let devices = self
+            .onvif
+            .discover(&request)
+            .await
+            .map_err(|error| SourceManagerError::Onvif(error.to_string()))?;
+        let session_id = format!(
+            "onboarding-{}",
+            self.next_onboarding_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let draft = OnboardingDraft::discovered(session_id.clone(), devices);
+        let view = draft.view();
+        self.onboarding.write().await.insert(session_id, draft);
+        Ok(view)
+    }
+
+    pub async fn onboarding_session(
+        &self,
+        session_id: &str,
+    ) -> Result<OnboardingSessionView, SourceManagerError> {
+        self.onboarding
+            .read()
+            .await
+            .get(session_id)
+            .map(OnboardingDraft::view)
+            .ok_or_else(|| {
+                SourceManagerError::InvalidRequest("onboarding session not found".into())
+            })
+    }
+
+    pub async fn onboarding_inspect(
+        &self,
+        session_id: &str,
+        request: crate::onboarding::OnboardingInspectRequest,
+    ) -> Result<OnboardingSessionView, SourceManagerError> {
+        let inspection = self
+            .onvif
+            .inspect(&OnvifInspectRequest {
+                endpoint: request.endpoint.clone(),
+                username: request.username.clone(),
+                password: request.password.clone(),
+                timeout_ms: request.timeout_ms,
+            })
+            .await
+            .map_err(|error| SourceManagerError::Onvif(error.to_string()))?;
+        let selected_profile = inspection
+            .device
+            .profiles
+            .iter()
+            .filter(|profile| profile.rtsp_uri.is_some())
+            .max_by_key(|profile| profile_score(profile))
+            .cloned();
+        let mut onboarding = self.onboarding.write().await;
+        let draft = onboarding.get_mut(session_id).ok_or_else(|| {
+            SourceManagerError::InvalidRequest("onboarding session not found".into())
+        })?;
+        draft.endpoint = Some(request.endpoint);
+        draft.username = request.username;
+        draft.password = request.password;
+        draft.selected_profile = selected_profile;
+        draft.inspection = Some(inspection);
+        Ok(draft.view())
+    }
+
+    pub async fn onboarding_complete(
+        &self,
+        session_id: &str,
+        request: crate::onboarding::OnboardingCompleteRequest,
+    ) -> Result<OnboardingCompletion, SourceManagerError> {
+        if request.source_id.trim().is_empty() || request.name.trim().is_empty() {
+            return Err(SourceManagerError::InvalidRequest(
+                "camera name and source ID are required".into(),
+            ));
+        }
+        let draft = self
+            .onboarding
+            .read()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| {
+                SourceManagerError::InvalidRequest("onboarding session not found".into())
+            })?;
+        let Some(inspection) = draft.inspection.clone() else {
+            return Err(SourceManagerError::InvalidRequest(
+                "inspect the camera before completing setup".into(),
+            ));
+        };
+        let Some(profile) = draft.selected_profile.clone() else {
+            return Ok(OnboardingCompletion {
+                success: false,
+                state: crate::onboarding::OnboardingState::Failed,
+                source_id: None,
+                checks: vec![check(
+                    "video_profile",
+                    "fail",
+                    "Camera is reachable, but no usable video profile was found.",
+                )],
+                failure: Some(OnboardingFailure {
+                    stage: "profile_selection".into(),
+                    code: "NO_USABLE_VIDEO_PROFILE".into(),
+                    message: "Camera is reachable, but no usable video profile was found.".into(),
+                    technical_detail: None,
+                }),
+            });
+        };
+        let uri = profile.rtsp_uri.clone().ok_or_else(|| {
+            SourceManagerError::InvalidRequest("selected video profile has no RTSP URI".into())
+        })?;
+        self.add(AddSource {
+            id: request.source_id.clone(),
+            kind: "rtsp".into(),
+            options: SourceOptions {
+                name: Some(request.name),
+                location: request.location,
+                uri: Some(uri),
+                transport: Some("tcp".into()),
+                credentials: Some(RtspCredentials {
+                    username: draft.username,
+                    password: draft.password,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        })
+        .await?;
+        let validation = self.validate(&request.source_id).await?;
+        let mut checks = vec![
+            check("onvif", "pass", "Camera capabilities discovered."),
+            check(
+                "video_profile",
+                "pass",
+                "A usable video profile was selected automatically.",
+            ),
+        ];
+        if !validation.valid {
+            let failure = validation.failure.clone().unwrap_or_else(|| RtspFailure {
+                code: RtspFailureCode::Unknown,
+                message: "RTSP validation failed.".into(),
+                technical_detail: None,
+            });
+            checks.push(check("rtsp", "fail", rtsp_user_message(&failure.code)));
+            let _ = self.remove(&request.source_id).await;
+            return Ok(OnboardingCompletion {
+                success: false,
+                state: crate::onboarding::OnboardingState::Failed,
+                source_id: None,
+                checks,
+                failure: Some(OnboardingFailure {
+                    stage: "rtsp_validation".into(),
+                    code: serde_json::to_string(&failure.code).unwrap_or_else(|_| "UNKNOWN".into()),
+                    message: rtsp_user_message(&failure.code).into(),
+                    technical_detail: failure.technical_detail,
+                }),
+            });
+        }
+        checks.push(check("rtsp", "pass", "Camera video stream validated."));
+        let playback = match self.register_playback(&request.source_id).await {
+            Ok(playback) => playback,
+            Err(error) => {
+                let _ = self.remove(&request.source_id).await;
+                return Ok(OnboardingCompletion {
+                    success: false,
+                    state: crate::onboarding::OnboardingState::Failed,
+                    source_id: None,
+                    checks,
+                    failure: Some(OnboardingFailure {
+                        stage: "browser_playback".into(),
+                        code: "BROWSER_PLAYBACK_UNAVAILABLE".into(),
+                        message: "Video works, but browser playback is unavailable.".into(),
+                        technical_detail: Some(error.to_string()),
+                    }),
+                });
+            }
+        };
+        checks.push(check("media_gateway", "pass", "Media delivery registered."));
+        checks.push(check(
+            "browser_preview",
+            "ready",
+            "Browser live preview is ready to open.",
+        ));
+        checks.push(check(
+            "ptz",
+            if inspection.device.capabilities.ptz.supported {
+                "supported"
+            } else {
+                "unsupported"
+            },
+            if inspection.device.capabilities.ptz.supported {
+                "PTZ is supported and ready for testing."
+            } else {
+                "PTZ is not supported by this camera."
+            },
+        ));
+        checks.push(check(
+            "health",
+            "ready",
+            "Camera health monitoring is active.",
+        ));
+        self.onboarding.write().await.remove(session_id);
+        let _ = playback;
+        Ok(OnboardingCompletion {
+            success: true,
+            state: crate::onboarding::OnboardingState::Ready,
+            source_id: Some(request.source_id),
+            checks,
+            failure: None,
+        })
+    }
+
+    pub async fn inspect_onvif(
+        &self,
+        id: &str,
+        request: OnvifInspectRequest,
+    ) -> Result<serde_json::Value, SourceManagerError> {
+        {
+            let sources = self.sources.read().await;
+            let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+            if entry.info.kind != "rtsp" {
+                return Err(SourceManagerError::Unsupported(
+                    "ONVIF inspection requires an RTSP source".into(),
+                ));
+            }
+        }
+        let inspection = self
+            .onvif
+            .inspect(&request)
+            .await
+            .map_err(|error| SourceManagerError::Onvif(error.to_string()))?;
+        {
+            let mut sources = self.sources.write().await;
+            let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
+            entry.info.capabilities = Some(inspection.device.capabilities.clone());
+            entry.ptz_session = inspection.ptz_session.clone();
+            entry.ptz_presets.clear();
+            if let Some(uri) = inspection.selected_rtsp_uri.clone() {
+                entry.options.uri = Some(uri);
+            }
+            if request.username.is_some() || request.password.is_some() {
+                entry.options.credentials = Some(RtspCredentials {
+                    username: request.username.clone(),
+                    password: request.password.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        let validation = self
+            .validate(id)
+            .await
+            .map_err(|error| SourceManagerError::Camera(error.to_string()))?;
+        self.events.publish(Event {
+            kind: "onvif_inspection_completed".into(),
+            source_id: Some(id.into()),
+            message: "ONVIF capabilities normalized and RTSP handoff validated".into(),
+        });
+        Ok(serde_json::json!({
+            "device": inspection.device,
+            "rtspValidation": validation
+        }))
+    }
+
+    pub async fn capabilities(
+        &self,
+        id: &str,
+    ) -> Result<Option<CameraCapabilities>, SourceManagerError> {
+        let sources = self.sources.read().await;
+        let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+        Ok(entry.info.capabilities.clone())
+    }
+
+    pub async fn media_gateway_health(&self) -> MediaGatewayStatus {
+        self.media_gateway.health().await
+    }
+
+    pub async fn register_playback(&self, id: &str) -> Result<PlaybackInfo, SourceManagerError> {
+        let (uri, username, password) = {
+            let sources = self.sources.read().await;
+            let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+            if entry.info.kind != "rtsp" {
+                return Err(SourceManagerError::Unsupported(
+                    "media playback registration requires an RTSP source".into(),
+                ));
+            }
+            if !matches!(entry.info.validation, ValidationState::Validated) {
+                return Err(SourceManagerError::InvalidRequest(
+                    "validate the RTSP source before registering browser playback".into(),
+                ));
+            }
+            let (username, password) = resolve_credentials(entry.options.credentials.as_ref());
+            (
+                entry.options.uri.clone().ok_or_else(|| {
+                    SourceManagerError::InvalidRequest("RTSP source URI is missing".into())
+                })?,
+                username,
+                password,
+            )
+        };
+        let registration = MediaSourceRegistration {
+            source_id: id.into(),
+            rtsp_uri: uri,
+            username,
+            password,
+        };
+        match self.media_gateway.register_source(registration).await {
+            Ok(()) => {
+                self.set_media_health(id, MediaDeliveryHealth::Healthy)
+                    .await;
+                self.events.publish(Event {
+                    kind: "media_source_registered".into(),
+                    source_id: Some(id.into()),
+                    message: "source registered with media gateway".into(),
+                });
+                self.playback(id).await
+            }
+            Err(error) => {
+                self.set_media_health(id, MediaDeliveryHealth::Unavailable)
+                    .await;
+                self.events.publish(Event {
+                    kind: "media_source_registration_failed".into(),
+                    source_id: Some(id.into()),
+                    message: error.message.clone(),
+                });
+                Err(SourceManagerError::MediaGateway(error.to_string()))
+            }
+        }
+    }
+
+    pub async fn remove_playback(&self, id: &str) -> Result<(), SourceManagerError> {
+        if !self.sources.read().await.contains_key(id) {
+            return Err(SourceManagerError::NotFound);
+        }
+        self.media_gateway
+            .remove_source(id)
+            .await
+            .map_err(|error| SourceManagerError::MediaGateway(error.to_string()))?;
+        self.set_media_health(id, MediaDeliveryHealth::Unknown)
+            .await;
+        self.events.publish(Event {
+            kind: "media_source_removed".into(),
+            source_id: Some(id.into()),
+            message: "source removed from media gateway".into(),
+        });
+        Ok(())
+    }
+
+    pub async fn playback(&self, id: &str) -> Result<PlaybackInfo, SourceManagerError> {
+        if !self.sources.read().await.contains_key(id) {
+            return Err(SourceManagerError::NotFound);
+        }
+        let result = self.media_gateway.playback(id).await;
+        match result {
+            Ok(playback) => {
+                self.set_media_health(id, playback.media_health.clone())
+                    .await;
+                Ok(playback)
+            }
+            Err(error) => {
+                self.set_media_health(id, MediaDeliveryHealth::Unavailable)
+                    .await;
+                Err(SourceManagerError::MediaGateway(error.to_string()))
+            }
+        }
+    }
+
+    pub async fn shutdown_media_gateway(&self) {
+        self.media_gateway.shutdown().await;
+    }
+
+    async fn set_media_health(&self, id: &str, health: MediaDeliveryHealth) {
+        if let Some(entry) = self.sources.write().await.get_mut(id) {
+            entry.info.media_health = health;
+        }
+    }
+
+    pub async fn ptz_capabilities(&self, id: &str) -> Result<PtzCapabilities, SourceManagerError> {
+        Ok(self
+            .capabilities(id)
+            .await?
+            .map(|capabilities| capabilities.ptz)
+            .unwrap_or_default())
+    }
+
+    pub async fn ptz_move(
+        &self,
+        id: &str,
+        request: PtzMoveRequest,
+        audit: PtzAuditContext,
+    ) -> Result<PtzOperationResult, SourceManagerError> {
+        let operation_name = format!("{:?}_move", request.mode).to_lowercase();
+        let values = match validate_move(&request) {
+            Ok(values) => values,
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    &operation_name,
+                    &audit,
+                    &request,
+                    false,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        let (session, capabilities) = match self.ptz_context(id).await {
+            Ok(context) => context,
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    &operation_name,
+                    &audit,
+                    &request,
+                    false,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        let supported = match request.mode {
+            PtzMoveMode::Continuous => capabilities.continuous_move,
+            PtzMoveMode::Relative => capabilities.relative_move,
+            PtzMoveMode::Absolute => capabilities.absolute_move,
+        };
+        if !supported {
+            let error = SourceManagerError::PtzOperationUnsupported(operation_name.clone());
+            self.audit_ptz(
+                id,
+                &operation_name,
+                &audit,
+                &request,
+                false,
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+        if values.0 != 0.0 && !capabilities.pan
+            || values.1 != 0.0 && !capabilities.tilt
+            || values.2 != 0.0 && !capabilities.zoom
+        {
+            let error = SourceManagerError::PtzOperationUnsupported("requested_axis".into());
+            self.audit_ptz(
+                id,
+                &operation_name,
+                &audit,
+                &request,
+                false,
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+        let operation = match request.mode {
+            PtzMoveMode::Continuous => PtzOperation::Continuous {
+                pan: values.0,
+                tilt: values.1,
+                zoom: values.2,
+            },
+            PtzMoveMode::Relative => PtzOperation::Relative {
+                pan: values.0,
+                tilt: values.1,
+                zoom: values.2,
+            },
+            PtzMoveMode::Absolute => PtzOperation::Absolute {
+                pan: values.0,
+                tilt: values.1,
+                zoom: values.2,
+            },
+        };
+        match self
+            .onvif
+            .ptz(&session, operation, self.validation_timeout)
+            .await
+        {
+            Ok(PtzResponse::Ack) => {
+                let result = PtzOperationResult {
+                    operation: operation_name.clone(),
+                    success: true,
+                };
+                self.audit_ptz(id, &operation_name, &audit, &request, true, None);
+                Ok(result)
+            }
+            Ok(PtzResponse::Presets(_)) => {
+                Err(SourceManagerError::Onvif("unexpected PTZ response".into()))
+            }
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    &operation_name,
+                    &audit,
+                    &request,
+                    false,
+                    Some(error.to_string()),
+                );
+                Err(SourceManagerError::Onvif(error.to_string()))
+            }
+        }
+    }
+
+    pub async fn ptz_stop(
+        &self,
+        id: &str,
+        audit: PtzAuditContext,
+    ) -> Result<PtzOperationResult, SourceManagerError> {
+        let operation = "stop";
+        let (session, _) = match self.ptz_context(id).await {
+            Ok(context) => context,
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    operation,
+                    &audit,
+                    &serde_json::json!({}),
+                    false,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        match self
+            .onvif
+            .ptz(&session, PtzOperation::Stop, self.validation_timeout)
+            .await
+        {
+            Ok(PtzResponse::Ack) => {
+                let result = PtzOperationResult {
+                    operation: operation.into(),
+                    success: true,
+                };
+                self.audit_ptz(id, operation, &audit, &serde_json::json!({}), true, None);
+                Ok(result)
+            }
+            Ok(PtzResponse::Presets(_)) => {
+                Err(SourceManagerError::Onvif("unexpected PTZ response".into()))
+            }
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    operation,
+                    &audit,
+                    &serde_json::json!({}),
+                    false,
+                    Some(error.to_string()),
+                );
+                Err(SourceManagerError::Onvif(error.to_string()))
+            }
+        }
+    }
+
+    pub async fn ptz_presets(
+        &self,
+        id: &str,
+        audit: PtzAuditContext,
+    ) -> Result<Vec<PtzPreset>, SourceManagerError> {
+        let (session, capabilities) = match self.ptz_context(id).await {
+            Ok(context) => context,
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    "get_presets",
+                    &audit,
+                    &serde_json::json!({}),
+                    false,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        if !capabilities.presets {
+            let error = SourceManagerError::PtzOperationUnsupported("presets".into());
+            self.audit_ptz(
+                id,
+                "get_presets",
+                &audit,
+                &serde_json::json!({}),
+                false,
+                Some(error.to_string()),
+            );
+            return Err(error);
+        }
+        match self
+            .onvif
+            .ptz(&session, PtzOperation::GetPresets, self.validation_timeout)
+            .await
+        {
+            Ok(PtzResponse::Presets(presets)) => {
+                let mut sources = self.sources.write().await;
+                let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
+                entry.ptz_presets = presets
+                    .iter()
+                    .filter_map(|preset| {
+                        preset.token.clone().map(|token| (preset.id.clone(), token))
+                    })
+                    .collect();
+                self.audit_ptz(
+                    id,
+                    "get_presets",
+                    &audit,
+                    &serde_json::json!({"count": presets.len()}),
+                    true,
+                    None,
+                );
+                Ok(presets)
+            }
+            Ok(PtzResponse::Ack) => {
+                Err(SourceManagerError::Onvif("unexpected PTZ response".into()))
+            }
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    "get_presets",
+                    &audit,
+                    &serde_json::json!({}),
+                    false,
+                    Some(error.to_string()),
+                );
+                Err(SourceManagerError::Onvif(error.to_string()))
+            }
+        }
+    }
+
+    pub async fn ptz_goto_preset(
+        &self,
+        id: &str,
+        preset_id: &str,
+        audit: PtzAuditContext,
+    ) -> Result<PtzOperationResult, SourceManagerError> {
+        let (session, capabilities, token) = {
+            let sources = self.sources.read().await;
+            let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+            let capabilities = entry
+                .info
+                .capabilities
+                .as_ref()
+                .map(|value| value.ptz.clone())
+                .unwrap_or_default();
+            let session = entry
+                .ptz_session
+                .clone()
+                .ok_or(SourceManagerError::PtzNotSupported)?;
+            (
+                session,
+                capabilities,
+                entry.ptz_presets.get(preset_id).cloned(),
+            )
+        };
+        if !capabilities.supported {
+            return Err(SourceManagerError::PtzNotSupported);
+        }
+        if !capabilities.presets {
+            return Err(SourceManagerError::PtzOperationUnsupported(
+                "presets".into(),
+            ));
+        }
+        let token = token.ok_or_else(|| {
+            SourceManagerError::InvalidRequest(
+                "preset must be listed before it can be selected".into(),
+            )
+        })?;
+        let operation = "goto_preset";
+        match self
+            .onvif
+            .ptz(
+                &session,
+                PtzOperation::GotoPreset { token },
+                self.validation_timeout,
+            )
+            .await
+        {
+            Ok(PtzResponse::Ack) => {
+                let result = PtzOperationResult {
+                    operation: operation.into(),
+                    success: true,
+                };
+                self.audit_ptz(
+                    id,
+                    operation,
+                    &audit,
+                    &serde_json::json!({"presetId": preset_id}),
+                    true,
+                    None,
+                );
+                Ok(result)
+            }
+            Ok(PtzResponse::Presets(_)) => {
+                Err(SourceManagerError::Onvif("unexpected PTZ response".into()))
+            }
+            Err(error) => {
+                self.audit_ptz(
+                    id,
+                    operation,
+                    &audit,
+                    &serde_json::json!({"presetId": preset_id}),
+                    false,
+                    Some(error.to_string()),
+                );
+                Err(SourceManagerError::Onvif(error.to_string()))
+            }
+        }
+    }
+
+    async fn ptz_context(
+        &self,
+        id: &str,
+    ) -> Result<(PtzSession, PtzCapabilities), SourceManagerError> {
+        let sources = self.sources.read().await;
+        let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+        let capabilities = entry
+            .info
+            .capabilities
+            .as_ref()
+            .map(|value| value.ptz.clone())
+            .unwrap_or_default();
+        if !capabilities.supported {
+            return Err(SourceManagerError::PtzNotSupported);
+        }
+        Ok((
+            entry
+                .ptz_session
+                .clone()
+                .ok_or(SourceManagerError::PtzNotSupported)?,
+            capabilities,
+        ))
+    }
+
+    fn audit_ptz<T: serde::Serialize>(
+        &self,
+        id: &str,
+        operation: &str,
+        audit: &PtzAuditContext,
+        request: &T,
+        success: bool,
+        failure: Option<String>,
+    ) {
+        let mut record = EventRecord::simple(
+            format!("ptz.{operation}"),
+            Some(id.into()),
+            if success {
+                "PTZ operation succeeded"
+            } else {
+                "PTZ operation failed"
+            },
+        );
+        record.metadata = serde_json::json!({"actor": audit.actor, "cameraId": id, "operation": operation, "request": request, "correlationId": audit.correlation_id, "outcome": if success { "success" } else { "failure" }, "failure": failure});
+        self.events.publish_record(record);
+    }
+
+    pub fn spawn_health_monitor(&self) -> Option<JoinHandle<()>> {
+        if !self.health_config.enabled {
+            return None;
+        }
+        let manager = self.clone();
+        let mut shutdown = self.shutdown.clone();
+        let interval = Duration::from_secs(self.health_config.interval_seconds.max(1));
+        Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => manager.monitor_once().await,
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { break; }
+                    }
+                }
+            }
+        }))
+    }
+
+    pub async fn monitor_once(&self) {
+        let ids = self
+            .sources
+            .read()
+            .await
+            .values()
+            .filter(|entry| entry.info.kind == "rtsp")
+            .map(|entry| entry.info.id.clone())
+            .collect::<Vec<_>>();
+        let mut tasks = Vec::new();
+        for id in ids {
+            let inserted = {
+                let mut inflight = self.health_inflight.lock().await;
+                inflight.insert(id.clone())
+            };
+            if !inserted {
+                continue;
+            }
+            let manager = self.clone();
+            let semaphore = self.health_semaphore.clone();
+            tasks.push(tokio::spawn(async move {
+                let Ok(permit) = semaphore.acquire_owned().await else {
+                    manager.health_inflight.lock().await.remove(&id);
+                    return;
+                };
+                manager.run_health_cycle(&id).await;
+                drop(permit);
+                manager.health_inflight.lock().await.remove(&id);
+            }));
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
+    async fn run_health_cycle(&self, id: &str) {
+        let component = format!("source:{id}");
+        let initial = self.validate(id).await;
+        let Ok(result) = initial else {
+            return;
+        };
+        if result.valid {
+            self.mark_recovered(id, &component).await;
+            return;
+        }
+        let Some(failure) = result.failure.as_ref() else {
+            return;
+        };
+        if !is_retryable(&failure.code) || self.health_config.max_attempts == 0 {
+            self.mark_exhausted(id, &component, failure.message.clone())
+                .await;
+            return;
+        }
+        let mut delay = Duration::from_millis(self.health_config.initial_backoff_ms.max(1));
+        let max_delay = Duration::from_secs(self.health_config.max_backoff_seconds.max(1));
+        for attempt in 1..=self.health_config.max_attempts {
+            self.mark_recovery_started(id, attempt, delay).await;
+            let mut shutdown = self.shutdown.clone();
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {},
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return; }
+                }
+            }
+            let Ok(result) = self.validate(id).await else {
+                return;
+            };
+            if result.valid {
+                self.mark_recovered(id, &component).await;
+                return;
+            }
+            let Some(failure) = result.failure.as_ref() else {
+                return;
+            };
+            if !is_retryable(&failure.code) {
+                self.mark_exhausted(id, &component, failure.message.clone())
+                    .await;
+                return;
+            }
+            if attempt == self.health_config.max_attempts {
+                self.mark_exhausted(id, &component, failure.message.clone())
+                    .await;
+                return;
+            }
+            delay = (delay * 2).min(max_delay);
+        }
+    }
+
+    async fn mark_recovery_started(&self, id: &str, attempt: u32, delay: Duration) {
+        let now = now_ms();
+        if let Some(entry) = self.sources.write().await.get_mut(id) {
+            entry.info.recovery = RecoveryState::Recovering;
+            entry.info.recovery_attempts = attempt;
+            entry.info.last_recovery_started = Some(now);
+            entry.info.next_recovery_at = Some(now + delay.as_millis());
+        }
+        self.recovery
+            .monitor
+            .set(
+                format!("source:{id}").as_str(),
+                crate::recovery::ComponentState::Recovering,
+                "RTSP health recovery in progress",
+                attempt as u64,
+            )
+            .await;
+        self.events.publish(Event {
+            kind: "source_recovery_started".into(),
+            source_id: Some(id.into()),
+            message: format!("RTSP recovery attempt {attempt}"),
+        });
+    }
+
+    async fn mark_recovered(&self, id: &str, component: &str) {
+        let now = now_ms();
+        let was_recovering = if let Some(entry) = self.sources.write().await.get_mut(id) {
+            let was = entry.info.recovery != RecoveryState::Idle;
+            entry.info.recovery = RecoveryState::Idle;
+            entry.info.recovery_attempts = 0;
+            entry.info.last_recovery_succeeded = Some(now);
+            entry.info.next_recovery_at = None;
+            was
+        } else {
+            false
+        };
+        self.recovery
+            .monitor
+            .set(
+                component,
+                crate::recovery::ComponentState::Healthy,
+                "RTSP source healthy",
+                0,
+            )
+            .await;
+        if was_recovering {
+            self.events.publish(Event {
+                kind: "source_recovered".into(),
+                source_id: Some(id.into()),
+                message: "RTSP source recovered".into(),
+            });
+        }
+    }
+
+    async fn mark_exhausted(&self, id: &str, component: &str, message: String) {
+        let now = now_ms();
+        if let Some(entry) = self.sources.write().await.get_mut(id) {
+            entry.info.recovery = RecoveryState::Exhausted;
+            entry.info.last_recovery_exhausted = Some(now);
+            entry.info.next_recovery_at = None;
+        }
+        self.recovery
+            .monitor
+            .set(
+                component,
+                crate::recovery::ComponentState::Failed,
+                message.clone(),
+                self.health_config.max_attempts as u64,
+            )
+            .await;
+        self.events.publish(Event {
+            kind: "source_recovery_exhausted".into(),
+            source_id: Some(id.into()),
+            message,
+        });
+    }
+
+    pub async fn validate(&self, id: &str) -> Result<RtspValidationResult, SourceManagerError> {
+        let options = {
+            let mut sources = self.sources.write().await;
+            let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
+            if entry.info.kind != "rtsp" {
+                return Err(SourceManagerError::Unsupported(
+                    "RTSP validation requires an RTSP source".into(),
+                ));
+            }
+            entry.info.validation = ValidationState::Validating;
+            entry.options.clone()
+        };
+        let uri = options.uri.clone().unwrap_or_default();
+        let (username, password) = resolve_credentials(options.credentials.as_ref());
+        let result = self
+            .validator
+            .validate(RtspValidationRequest {
+                uri,
+                username,
+                password,
+            })
+            .await;
+        let mut sources = self.sources.write().await;
+        let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
+        entry.info.last_validation_attempt = Some(result.checked_at);
+        if result.valid {
+            entry.info.validation = ValidationState::Validated;
+            entry.info.health = StreamHealth::Healthy;
+            entry.info.last_successful_validation = Some(result.checked_at);
+            entry.info.last_validation_failure = None;
+            entry.info.consecutive_validation_failures = 0;
+        } else {
+            entry.info.validation = ValidationState::Failed;
+            entry.info.health = StreamHealth::Unhealthy;
+            entry.info.consecutive_validation_failures =
+                entry.info.consecutive_validation_failures.saturating_add(1);
+            entry.info.last_validation_failure = result.failure.clone();
+        }
+        drop(sources);
+        self.events.publish(Event {
+            kind: if result.valid {
+                "source_validation_succeeded"
+            } else {
+                "source_validation_failed"
+            }
+            .into(),
+            source_id: Some(id.into()),
+            message: result
+                .failure
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_else(|| "RTSP source validation succeeded".into()),
+        });
+        Ok(result)
     }
 
     pub fn providers() -> Vec<CameraProviderInfo> {
@@ -1215,6 +2439,16 @@ impl VideoSourceManager {
     }
     pub async fn remove(&self, id: &str) -> Result<(), SourceManagerError> {
         self.stop(id).await?;
+        let is_rtsp = self
+            .sources
+            .read()
+            .await
+            .get(id)
+            .map(|entry| entry.info.kind == "rtsp")
+            .unwrap_or(false);
+        if is_rtsp {
+            let _ = self.media_gateway.remove_source(id).await;
+        }
         if self.sources.write().await.remove(id).is_some() {
             Ok(())
         } else {
@@ -1326,6 +2560,25 @@ impl VideoSourceManager {
             }
         }
     }
+}
+
+fn resolve_credentials(credentials: Option<&RtspCredentials>) -> (Option<String>, Option<String>) {
+    let Some(credentials) = credentials else {
+        return (None, None);
+    };
+    let username = credentials.username.clone().or_else(|| {
+        credentials
+            .username_env
+            .as_ref()
+            .and_then(|name| std::env::var(name).ok())
+    });
+    let password = credentials.password.clone().or_else(|| {
+        credentials
+            .password_env
+            .as_ref()
+            .and_then(|name| std::env::var(name).ok())
+    });
+    (username, password)
 }
 impl VideoSourceManager {
     async fn reconnect_virtual_until_running(&self, id: &str) -> bool {
@@ -1585,6 +2838,295 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn is_retryable(code: &crate::rtsp::RtspFailureCode) -> bool {
+    matches!(
+        code,
+        crate::rtsp::RtspFailureCode::SourceUnreachable
+            | crate::rtsp::RtspFailureCode::ConnectionTimeout
+            | crate::rtsp::RtspFailureCode::Unknown
+    )
+}
+
+fn validate_move(request: &PtzMoveRequest) -> Result<(f32, f32, f32), SourceManagerError> {
+    let values = (
+        request.pan.unwrap_or(0.0),
+        request.tilt.unwrap_or(0.0),
+        request.zoom.unwrap_or(0.0),
+    );
+    if [values.0, values.1, values.2]
+        .iter()
+        .any(|value| !value.is_finite() || !(-1.0..=1.0).contains(value))
+    {
+        return Err(SourceManagerError::InvalidRequest(
+            "PTZ movement values must be finite and between -1 and 1".into(),
+        ));
+    }
+    if values == (0.0, 0.0, 0.0) {
+        return Err(SourceManagerError::InvalidRequest(
+            "PTZ movement must request at least one non-zero axis".into(),
+        ));
+    }
+    Ok(values)
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod onvif_handoff_tests {
+    use super::*;
+    use crate::onvif::{
+        emulator::OnvifEmulator, CameraCapabilities, MediaProfile, OnvifDevice, OnvifInspection,
+        PtzCapabilities,
+    };
+    use async_trait::async_trait;
+
+    struct SuccessfulRtsp;
+    #[async_trait]
+    impl crate::rtsp::RtspValidationBackend for SuccessfulRtsp {
+        async fn validate(
+            &self,
+            _request: &crate::rtsp::RtspValidationRequest,
+            _timeout: Duration,
+        ) -> Result<(u16, u16), RtspFailure> {
+            Ok((200, 200))
+        }
+    }
+
+    #[tokio::test]
+    async fn inspection_hands_selected_rtsp_uri_to_existing_validator() {
+        let endpoint = "http://emulator/onvif";
+        let inspection = OnvifInspection {
+            device: OnvifDevice {
+                id: "onvif-emulator".into(),
+                address: endpoint.into(),
+                manufacturer: Some("Sentinel".into()),
+                model: Some("Test PTZ".into()),
+                capabilities: CameraCapabilities {
+                    video: true,
+                    audio: false,
+                    snapshot: false,
+                    events: true,
+                    ptz: PtzCapabilities {
+                        supported: true,
+                        pan: true,
+                        tilt: true,
+                        zoom: true,
+                        continuous_move: true,
+                        relative_move: true,
+                        absolute_move: true,
+                        presets: true,
+                    },
+                },
+                profiles: vec![MediaProfile {
+                    name: "Main".into(),
+                    encoding: Some("H264".into()),
+                    resolution: Some("1280x720".into()),
+                    frame_rate: Some(25.0),
+                    audio: false,
+                    rtsp_uri: Some("rtsp://camera/main".into()),
+                    token: Some("profile-token".into()),
+                }],
+            },
+            selected_rtsp_uri: Some("rtsp://camera/main".into()),
+            ptz_session: Some(PtzSession {
+                service_endpoint: endpoint.into(),
+                profile_token: "profile-token".into(),
+                username: Some("admin".into()),
+                password: Some("secret".into()),
+            }),
+        };
+        let emulator = Arc::new(OnvifEmulator::new(vec![inspection]));
+        emulator.presets.lock().unwrap().push(PtzPreset {
+            id: "preset-1".into(),
+            name: "Entrance".into(),
+            token: Some("preset-token".into()),
+        });
+        let events = EventBus::new(16);
+        let (_, shutdown) = watch::channel(false);
+        let manager = VideoSourceManager::new(
+            30,
+            events.clone(),
+            crate::config::Config::default().recovery.camera,
+            shutdown,
+            RecoveryEngine::new(events),
+        )
+        .with_onvif_client(OnvifClient::default().with_backend(emulator.clone()))
+        .with_validator(RtspValidator::default().with_backend(Arc::new(SuccessfulRtsp)));
+        manager
+            .add(AddSource {
+                id: "camera".into(),
+                kind: "rtsp".into(),
+                options: SourceOptions {
+                    uri: Some("rtsp://placeholder".into()),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        let result = manager
+            .inspect_onvif(
+                "camera",
+                OnvifInspectRequest {
+                    endpoint: endpoint.into(),
+                    username: Some("admin".into()),
+                    password: Some("secret".into()),
+                    timeout_ms: Some(100),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["rtspValidation"]["valid"], true);
+        let source = manager.get("camera").await.unwrap();
+        assert_eq!(source.validation, ValidationState::Validated);
+        assert!(source.capabilities.unwrap().ptz.supported);
+        let audit = PtzAuditContext {
+            actor: "operator".into(),
+            correlation_id: "corr-123".into(),
+        };
+        manager
+            .ptz_move(
+                "camera",
+                PtzMoveRequest {
+                    mode: PtzMoveMode::Continuous,
+                    pan: Some(0.5),
+                    tilt: Some(0.0),
+                    zoom: Some(0.0),
+                },
+                audit.clone(),
+            )
+            .await
+            .unwrap();
+        manager.ptz_stop("camera", audit.clone()).await.unwrap();
+        manager
+            .ptz_move(
+                "camera",
+                PtzMoveRequest {
+                    mode: PtzMoveMode::Relative,
+                    pan: Some(0.1),
+                    tilt: Some(0.0),
+                    zoom: Some(0.0),
+                },
+                audit.clone(),
+            )
+            .await
+            .unwrap();
+        manager
+            .ptz_move(
+                "camera",
+                PtzMoveRequest {
+                    mode: PtzMoveMode::Absolute,
+                    pan: Some(0.0),
+                    tilt: Some(0.1),
+                    zoom: Some(0.0),
+                },
+                audit.clone(),
+            )
+            .await
+            .unwrap();
+        let presets = manager.ptz_presets("camera", audit.clone()).await.unwrap();
+        manager
+            .ptz_goto_preset("camera", &presets[0].id, audit)
+            .await
+            .unwrap();
+        let operations = emulator.soap_operations.lock().unwrap().clone();
+        assert!(operations
+            .iter()
+            .any(|soap| soap.contains("ContinuousMove")));
+        assert!(operations.iter().any(|soap| soap.contains("GotoPreset")));
+        assert!(operations.iter().all(|soap| !soap.contains("preset-token")
+            && !soap.contains("profile-token")
+            && !soap.contains("secret")));
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let event = manager
+            .events
+            .store()
+            .recent(20)
+            .await
+            .into_iter()
+            .find(|event| event.event_type == "ptz.continuous_move")
+            .unwrap();
+        assert_eq!(event.metadata["correlationId"], "corr-123");
+    }
+
+    #[tokio::test]
+    async fn onboarding_selects_best_profile_without_exposing_credentials() {
+        let endpoint = "http://emulator/onvif";
+        let inspection = OnvifInspection {
+            device: OnvifDevice {
+                id: "onvif-emulator".into(),
+                address: endpoint.into(),
+                manufacturer: Some("Sentinel".into()),
+                model: Some("Onboarding Camera".into()),
+                capabilities: CameraCapabilities {
+                    video: true,
+                    audio: true,
+                    snapshot: true,
+                    events: true,
+                    ptz: PtzCapabilities::default(),
+                },
+                profiles: vec![
+                    MediaProfile {
+                        name: "Low".into(),
+                        encoding: Some("H265".into()),
+                        resolution: Some("640x360".into()),
+                        frame_rate: Some(15.0),
+                        audio: false,
+                        rtsp_uri: Some("rtsp://camera/low".into()),
+                        token: Some("low-token".into()),
+                    },
+                    MediaProfile {
+                        name: "Main".into(),
+                        encoding: Some("H264".into()),
+                        resolution: Some("1920x1080".into()),
+                        frame_rate: Some(25.0),
+                        audio: true,
+                        rtsp_uri: Some("rtsp://camera/main".into()),
+                        token: Some("main-token".into()),
+                    },
+                ],
+            },
+            selected_rtsp_uri: Some("rtsp://camera/low".into()),
+            ptz_session: None,
+        };
+        let emulator = Arc::new(OnvifEmulator::new(vec![inspection]));
+        let events = EventBus::new(16);
+        let (_, shutdown) = watch::channel(false);
+        let manager = VideoSourceManager::new(
+            30,
+            events.clone(),
+            crate::config::Config::default().recovery.camera,
+            shutdown,
+            RecoveryEngine::new(events),
+        )
+        .with_onvif_client(OnvifClient::default().with_backend(emulator));
+        let session = manager
+            .onboarding_discover(OnvifDiscoveryRequest {
+                address: None,
+                username: None,
+                password: None,
+                timeout_ms: Some(100),
+            })
+            .await
+            .unwrap();
+        let inspected = manager
+            .onboarding_inspect(
+                &session.session_id,
+                crate::onboarding::OnboardingInspectRequest {
+                    endpoint: endpoint.into(),
+                    username: Some("admin".into()),
+                    password: Some("secret".into()),
+                    timeout_ms: Some(100),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(inspected.selected_profile.as_ref().unwrap().name, "Main");
+        let serialized = serde_json::to_string(&inspected).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("main-token"));
+        assert!(serialized.contains("A usable video profile was selected automatically"));
+    }
 }
 
 fn xml_value(document: &str, element: &str) -> Option<String> {

@@ -10,6 +10,8 @@ use std::{
 pub struct Config {
     pub bind: String,
     pub fps: u32,
+    pub rtsp_validation_timeout_ms: u64,
+    pub media_gateway: MediaGatewayConfig,
     pub recovery: RecoveryConfig,
     pub pipeline: PipelineConfig,
     pub buffer: BufferConfig,
@@ -20,7 +22,31 @@ pub struct Config {
     pub metrics: MetricsConfig,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaGatewayConfig {
+    pub enabled: bool,
+    pub kind: String,
+    pub api_url: Option<String>,
+    pub base_url: Option<String>,
+    pub webrtc_base_url: Option<String>,
+    pub hls_base_url: Option<String>,
+    pub timeout_ms: u64,
+}
+impl Default for MediaGatewayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: "mediamtx".into(),
+            api_url: None,
+            base_url: None,
+            webrtc_base_url: None,
+            hls_base_url: None,
+            timeout_ms: 3000,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ConfiguredSource {
     pub id: String,
     pub name: Option<String>,
@@ -29,6 +55,7 @@ pub struct ConfiguredSource {
     pub port: Option<u16>,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(serialize_with = "serialize_safe_uri")]
     pub uri: Option<String>,
     pub path: Option<String>,
     pub transport: Option<String>,
@@ -41,10 +68,51 @@ pub struct ConfiguredSource {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
+
+impl std::fmt::Debug for ConfiguredSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfiguredSource")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("vendor", &self.vendor)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("kind", &self.kind)
+            .field("uri", &self.uri.as_deref().map(redact_uri_for_debug))
+            .field("path", &self.path)
+            .field("transport", &self.transport)
+            .field("credentials", &self.credentials)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+fn serialize_safe_uri<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    value
+        .as_deref()
+        .map(redact_uri_for_debug)
+        .serialize(serializer)
+}
+
+pub(crate) fn redact_uri_for_debug(value: &str) -> String {
+    url::Url::parse(value)
+        .map(|mut url| {
+            if !url.username().is_empty() {
+                let _ = url.set_username("[REDACTED]");
+                let _ = url.set_password(Some("[REDACTED]"));
+            }
+            url.to_string()
+        })
+        .unwrap_or_else(|_| "[REDACTED_URI]".into())
+}
 impl ConfiguredSource {
     pub fn options(&self) -> SourceOptions {
         SourceOptions {
             name: self.name.clone(),
+            location: None,
             vendor: self.vendor.clone(),
             host: self.host.clone(),
             port: self.port,
@@ -129,9 +197,31 @@ impl Default for MjpegRecoveryConfig {
         }
     }
 }
+#[derive(Clone, Debug, Serialize)]
+pub struct HealthConfig {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub max_concurrent_checks: usize,
+    pub max_attempts: u32,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_seconds: u64,
+}
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_seconds: 30,
+            max_concurrent_checks: 4,
+            max_attempts: 3,
+            initial_backoff_ms: 500,
+            max_backoff_seconds: 30,
+        }
+    }
+}
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RecoveryConfig {
     pub camera: ReconnectConfig,
+    pub health: HealthConfig,
     pub vision: VisionRecoveryConfig,
     pub mjpeg: MjpegRecoveryConfig,
 }
@@ -217,6 +307,8 @@ impl Default for Config {
         Self {
             bind: "0.0.0.0:8080".into(),
             fps: 30,
+            rtsp_validation_timeout_ms: 5000,
+            media_gateway: MediaGatewayConfig::default(),
             recovery: RecoveryConfig::default(),
             pipeline: PipelineConfig::default(),
             buffer: BufferConfig::default(),
@@ -250,6 +342,8 @@ struct FileConfig {
     server: Option<ServerPatch>,
     bind: Option<String>,
     fps: Option<u32>,
+    rtsp_validation_timeout_ms: Option<u64>,
+    media_gateway: Option<MediaGatewayPatch>,
     recovery: Option<RecoveryPatch>,
     pipeline: Option<PipelinePatch>,
     buffer: Option<BufferPatch>,
@@ -258,6 +352,16 @@ struct FileConfig {
     sources: Option<Vec<ConfiguredSource>>,
     logging: Option<LoggingPatch>,
     metrics: Option<MetricsPatch>,
+}
+#[derive(Debug, Default, Deserialize)]
+struct MediaGatewayPatch {
+    enabled: Option<bool>,
+    kind: Option<String>,
+    api_url: Option<String>,
+    base_url: Option<String>,
+    webrtc_base_url: Option<String>,
+    hls_base_url: Option<String>,
+    timeout_ms: Option<u64>,
 }
 #[derive(Debug, Default, Deserialize)]
 struct ServerPatch {
@@ -301,8 +405,18 @@ struct VisionPatch {
 #[derive(Debug, Default, Deserialize)]
 struct RecoveryPatch {
     camera: Option<ReconnectPatch>,
+    health: Option<HealthPatch>,
     vision: Option<VisionRecoveryPatch>,
     mjpeg: Option<MjpegRecoveryPatch>,
+}
+#[derive(Debug, Default, Deserialize)]
+struct HealthPatch {
+    enabled: Option<bool>,
+    interval_seconds: Option<u64>,
+    max_concurrent_checks: Option<usize>,
+    max_attempts: Option<u32>,
+    initial_backoff_ms: Option<u64>,
+    max_backoff_seconds: Option<u64>,
 }
 #[derive(Debug, Default, Deserialize)]
 struct ReconnectPatch {
@@ -366,6 +480,12 @@ impl Config {
         }
         if let Some(fps) = file.fps {
             self.fps = fps;
+        }
+        if let Some(timeout) = file.rtsp_validation_timeout_ms {
+            self.rtsp_validation_timeout_ms = timeout;
+        }
+        if let Some(media_gateway) = file.media_gateway {
+            merge_media_gateway(&mut self.media_gateway, media_gateway);
         }
         if let Some(p) = file.pipeline {
             merge_pipeline(&mut self.pipeline, p);
@@ -432,6 +552,27 @@ impl Config {
         if let Some(v) = env_u32("SENTINEL_FPS")? {
             self.fps = v;
         }
+        if let Some(v) = env_u64("SENTINEL_RTSP_VALIDATION_TIMEOUT_MS")? {
+            self.rtsp_validation_timeout_ms = v;
+        }
+        if let Some(v) = env_bool("SENTINEL_MEDIA_GATEWAY_ENABLED")? {
+            self.media_gateway.enabled = v;
+        }
+        if let Some(v) = env_string("SENTINEL_MEDIA_GATEWAY") {
+            self.media_gateway.kind = v;
+        }
+        if let Some(v) = env_string("SENTINEL_MEDIAMTX_API_URL") {
+            self.media_gateway.api_url = Some(v);
+        }
+        if let Some(v) = env_string("SENTINEL_MEDIAMTX_BASE_URL") {
+            self.media_gateway.base_url = Some(v);
+        }
+        if let Some(v) = env_string("SENTINEL_MEDIAMTX_WEBRTC_BASE_URL") {
+            self.media_gateway.webrtc_base_url = Some(v);
+        }
+        if let Some(v) = env_string("SENTINEL_MEDIAMTX_HLS_BASE_URL") {
+            self.media_gateway.hls_base_url = Some(v);
+        }
         if let Some(v) = env_bool("SENTINEL_VISION_ENABLED")? {
             self.vision.enabled = v;
         }
@@ -453,6 +594,37 @@ impl Config {
         })?;
         if !(1..=240).contains(&self.fps) {
             return Err(ConfigError::Invalid("fps must be between 1 and 240".into()));
+        }
+        if !(100..=60_000).contains(&self.rtsp_validation_timeout_ms) {
+            return Err(ConfigError::Invalid(
+                "rtsp_validation_timeout_ms must be between 100 and 60000".into(),
+            ));
+        }
+        if self.media_gateway.timeout_ms == 0 || self.media_gateway.timeout_ms > 60_000 {
+            return Err(ConfigError::Invalid(
+                "media_gateway.timeout_ms must be between 1 and 60000".into(),
+            ));
+        }
+        if self.media_gateway.kind != "mediamtx" {
+            return Err(ConfigError::Invalid(format!(
+                "unsupported media gateway: {}",
+                self.media_gateway.kind
+            )));
+        }
+        let health = &self.recovery.health;
+        if health.interval_seconds == 0
+            || health.max_concurrent_checks == 0
+            || health.initial_backoff_ms == 0
+            || health.max_backoff_seconds == 0
+        {
+            return Err(ConfigError::Invalid(
+                "recovery.health interval, concurrency, backoff, and max delay must be greater than zero".into(),
+            ));
+        }
+        if health.max_attempts > 100 {
+            return Err(ConfigError::Invalid(
+                "recovery.health max_attempts must be 100 or less".into(),
+            ));
         }
         if self.buffer.capacity == 0 {
             return Err(ConfigError::Invalid(
@@ -620,6 +792,26 @@ fn merge_recovery(dst: &mut RecoveryConfig, p: RecoveryPatch) {
             dst.camera.jitter = x
         }
     }
+    if let Some(v) = p.health {
+        if let Some(x) = v.enabled {
+            dst.health.enabled = x
+        }
+        if let Some(x) = v.interval_seconds {
+            dst.health.interval_seconds = x
+        }
+        if let Some(x) = v.max_concurrent_checks {
+            dst.health.max_concurrent_checks = x
+        }
+        if let Some(x) = v.max_attempts {
+            dst.health.max_attempts = x
+        }
+        if let Some(x) = v.initial_backoff_ms {
+            dst.health.initial_backoff_ms = x
+        }
+        if let Some(x) = v.max_backoff_seconds {
+            dst.health.max_backoff_seconds = x
+        }
+    }
     if let Some(v) = p.vision {
         if let Some(x) = v.enabled {
             dst.vision.enabled = x
@@ -635,6 +827,29 @@ fn merge_recovery(dst: &mut RecoveryConfig, p: RecoveryPatch) {
         if let Some(x) = v.cleanup_interval_seconds {
             dst.mjpeg.cleanup_interval_seconds = x
         }
+    }
+}
+fn merge_media_gateway(dst: &mut MediaGatewayConfig, p: MediaGatewayPatch) {
+    if let Some(value) = p.enabled {
+        dst.enabled = value;
+    }
+    if let Some(value) = p.kind {
+        dst.kind = value;
+    }
+    if let Some(value) = p.api_url {
+        dst.api_url = Some(value);
+    }
+    if let Some(value) = p.base_url {
+        dst.base_url = Some(value);
+    }
+    if let Some(value) = p.webrtc_base_url {
+        dst.webrtc_base_url = Some(value);
+    }
+    if let Some(value) = p.hls_base_url {
+        dst.hls_base_url = Some(value);
+    }
+    if let Some(value) = p.timeout_ms {
+        dst.timeout_ms = value;
     }
 }
 fn parse_duration(value: &str) -> Result<u64, ConfigError> {
@@ -683,6 +898,8 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
 
+    static CONFIG_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
     fn temp_yaml(contents: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -698,6 +915,10 @@ mod tests {
 
     #[test]
     fn yaml_and_cli_precedence_are_applied() {
+        let _guard = CONFIG_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
         let path = temp_yaml("server:\n  bind: 127.0.0.1:9000\nvision:\n  interval: 7s\nsources:\n  - id: demo\n    type: synthetic\n    width: 320\n    height: 200\n    fps: 15\n");
         let config = Config::load(&path, Some("127.0.0.1:9100"), None).unwrap();
         assert_eq!(config.bind, "127.0.0.1:9100");
@@ -708,8 +929,10 @@ mod tests {
 
     #[test]
     fn environment_overrides_yaml() {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _guard = CONFIG_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
         let path = temp_yaml("server:\n  bind: 127.0.0.1:9000\n");
         std::env::set_var("SENTINEL_BIND", "127.0.0.1:9200");
         let config = Config::load(&path, None, None).unwrap();

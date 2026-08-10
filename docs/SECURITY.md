@@ -1,0 +1,36 @@
+# Security boundaries
+
+SS-WP-009 adds a standalone bearer-token boundary without coupling the runtime
+to an enterprise identity provider. Configure `SENTINEL_VIEWER_TOKEN`,
+`SENTINEL_OPERATOR_TOKEN`, `SENTINEL_ADMIN_TOKEN`, or the legacy-compatible
+`SENTINEL_API_TOKEN`. `SENTINEL_BOOTSTRAP_TOKEN` is an explicitly supplied,
+temporary administrator token for first run. Sentinel ships no default
+credential.
+
+Liveness, readiness, and version are public. If no token is configured, the
+service intentionally remains in an open local-development mode for the
+camera-free quick start; it must not be exposed to a shared or remote network.
+Once any token is configured, all other API operations require
+`Authorization: Bearer <token>`. `/admin` serves only a login shell without a
+token; source data and operations remain protected.
+
+PTZ is consequential device control. All PTZ operations pass through the
+Sentinel API and the explicit `PtzAuthority` boundary; the admin page never
+calls ONVIF directly. `CONTROL_PTZ` is required and authorization is checked
+before an ONVIF command is issued.
+
+PTZ operational events use the existing event store and contain only safe
+normalized request data, source ID, operation, actor, outcome, and correlation
+ID. Passwords, bearer tokens, authorization headers, SOAP bodies, profile
+tokens, and device credentials are not recorded. Authentication and
+authorization failures use stable API codes and produce security events.
+
+Playback API access requires `VIEW_STREAM`, and returned browser URLs never
+contain camera credentials or MediaMTX admin credentials. The current adapter
+does not yet provision per-viewer MediaMTX JWT/auth policies, so deployments
+must keep MediaMTX listeners on a trusted network or behind an authenticated
+TLS reverse proxy. This is an explicit remaining CR-5 gap.
+
+Sentinel Streaming supports pluggable persistence. SQLite is an optional
+embedded backend for standalone deployments; it is not a mandatory dependency
+of the runtime or security implementation.
