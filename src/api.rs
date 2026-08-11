@@ -6,6 +6,7 @@ use crate::{
     frame_buffer::FrameBuffer,
     health::Health,
     media::MediaMtxAdapter,
+    media_artifacts::{ArtifactType, FilesystemArtifactStore, MediaArtifactStore},
     metrics::Metrics,
     mjpeg::MjpegStream,
     onboarding::{OnboardingCompleteRequest, OnboardingInspectRequest},
@@ -30,6 +31,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc};
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
@@ -53,6 +55,10 @@ pub struct AppState {
     pub shutdown: tokio::sync::watch::Sender<bool>,
     pub health_monitor: HealthMonitor,
     pub recovery: RecoveryEngine,
+    pub artifacts: Arc<dyn MediaArtifactStore>,
+    pub artifact_capture_semaphore: Arc<tokio::sync::Semaphore>,
+    pub clip_default_duration_seconds: u64,
+    pub clip_max_duration_seconds: u64,
 }
 impl AppState {
     pub fn new(
@@ -64,6 +70,22 @@ impl AppState {
         let events = EventBus::new(config.events.capacity);
         let recovery = RecoveryEngine::new(events.clone());
         let mjpeg = MjpegStream::new(frame_buffer.clone());
+        let clip_default_duration_seconds =
+            std::env::var("SENTINEL_MEDIA_CLIP_DEFAULT_DURATION_SECONDS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(10)
+                .clamp(1, 60);
+        let clip_max_duration_seconds = std::env::var("SENTINEL_MEDIA_CLIP_MAX_DURATION_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(60)
+            .clamp(1, 60);
+        let max_concurrent = std::env::var("SENTINEL_MEDIA_ARTIFACT_MAX_CONCURRENT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2)
+            .clamp(1, 8);
         let media_gateway = Arc::new(MediaMtxAdapter::new(
             config.media_gateway.enabled,
             config.media_gateway.api_url.clone(),
@@ -87,6 +109,7 @@ impl AppState {
                 config.rtsp_validation_timeout_ms,
             ))
             .with_health_config(config.recovery.health.clone())
+            .with_media_supervision_config(config.media_supervision.clone())
             .with_media_gateway(media_gateway),
             events,
             authenticator: BearerAuthenticator::from_env(),
@@ -100,6 +123,12 @@ impl AppState {
             shutdown,
             health_monitor: recovery.monitor.clone(),
             recovery,
+            artifacts: Arc::new(FilesystemArtifactStore::new(
+                crate::media_artifacts::default_root(),
+            )),
+            artifact_capture_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
+            clip_default_duration_seconds,
+            clip_max_duration_seconds,
         }
     }
 }
@@ -163,9 +192,21 @@ pub fn router(shared: Arc<AppState>) -> Router {
             post(register_playback).delete(remove_playback),
         )
         .route("/api/v1/media-gateway/health", get(media_gateway_health))
+        .route("/api/v1/media/health", get(media_gateway_health))
+        .route("/api/v1/sources/:id/media", get(source_media_telemetry))
         .route("/api/v1/sources/:id/start", post(start_source))
         .route("/api/v1/sources/:id/stop", post(stop_source))
         .route("/api/v1/sources/:id/restart", post(restart_source))
+        .route("/api/v1/sources/:id/snapshots", post(capture_snapshot))
+        .route("/api/v1/sources/:id/clips", post(capture_clip))
+        .route(
+            "/api/v1/media-artifacts/:id/content",
+            get(media_artifact_content),
+        )
+        .route(
+            "/api/v1/media-artifacts/:id",
+            get(media_artifact_metadata).delete(delete_media_artifact),
+        )
         .route("/api/v1/config", get(show_config))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/events/latest", get(latest_event))
@@ -467,8 +508,27 @@ fn required_authority(path: &str, method: &axum::http::Method) -> Option<Authori
     {
         return Some(Authority::ViewDiagnostics);
     }
+    if path == "/api/v1/media/health"
+        || path == "/api/v1/media-gateway/health"
+        || path.ends_with("/media")
+    {
+        return Some(Authority::ViewDiagnostics);
+    }
     if path == "/api/v1/auth/whoami" {
         return None;
+    }
+    if path.starts_with("/api/v1/media-artifacts/") {
+        return Some(if method == axum::http::Method::DELETE {
+            Authority::DeleteMediaArtifact
+        } else {
+            Authority::ViewMediaArtifact
+        });
+    }
+    if path.ends_with("/snapshots") {
+        return Some(Authority::CaptureSnapshot);
+    }
+    if path.ends_with("/clips") {
+        return Some(Authority::CaptureClip);
     }
     if path.contains("/ptz") {
         return Some(Authority::ControlPtz);
@@ -486,7 +546,7 @@ fn required_authority(path: &str, method: &axum::http::Method) -> Option<Authori
     }
     if path.contains("/playback") {
         return Some(if method == axum::http::Method::GET {
-            Authority::ViewStream
+            Authority::ViewAudio
         } else {
             Authority::ManageSource
         });
@@ -641,6 +701,337 @@ async fn validate_source(
     match state.sources.validate(&id).await {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => manager_error(error).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipCaptureRequest {
+    duration_seconds: Option<u64>,
+}
+
+fn request_actor(principal: Option<&Principal>) -> String {
+    principal
+        .map(|principal| principal.id.clone())
+        .unwrap_or_else(|| "authenticated".into())
+}
+
+fn request_correlation(headers: &HeaderMap, prefix: &str) -> String {
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{prefix}-{}", crate::events::now_ms()))
+}
+
+fn artifact_error(status: StatusCode, code: &str, message: &str) -> Response {
+    (status, Json(json!({"code": code, "error": message}))).into_response()
+}
+
+fn publish_artifact_event(
+    state: &AppState,
+    event_type: &str,
+    source_id: &str,
+    actor: &str,
+    correlation_id: &str,
+    artifact_id: Option<&str>,
+    outcome: &str,
+) {
+    state.events.publish_record(EventRecord {
+        id: String::new(),
+        timestamp: crate::events::now_ms(),
+        source_id: Some(source_id.into()),
+        event_type: event_type.into(),
+        provider: Some("media-artifacts".into()),
+        summary: format!("{event_type} for source {source_id}"),
+        objects: Vec::new(),
+        confidence: None,
+        latency_ms: None,
+        metadata: json!({
+            "actor": actor,
+            "correlationId": correlation_id,
+            "artifactId": artifact_id,
+            "outcome": outcome
+        }),
+    });
+}
+
+async fn capture_snapshot(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    principal: Option<axum::extract::Extension<Principal>>,
+) -> Response {
+    let actor = request_actor(principal.as_ref().map(|principal| &principal.0));
+    let correlation_id = request_correlation(&headers, "snapshot");
+    let _permit = match state.artifact_capture_semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return artifact_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "CAPTURE_BUSY",
+                "Too many captures are in progress.",
+            )
+        }
+    };
+    let source = match state.sources.get(&id).await {
+        Ok(source) => source,
+        Err(error) => return manager_error(error).into_response(),
+    };
+    if source.kind != "rtsp" {
+        return artifact_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "SNAPSHOT_UNAVAILABLE",
+            "Snapshot capture is available for RTSP sources.",
+        );
+    }
+    let Some(frame) = state.frame_buffer.latest() else {
+        return artifact_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "NO_MEDIA_FRAME",
+            "No decoded video frame is currently available.",
+        );
+    };
+    publish_artifact_event(
+        &state,
+        "SNAPSHOT_CAPTURE_REQUESTED",
+        &id,
+        &actor,
+        &correlation_id,
+        None,
+        "started",
+    );
+    let bytes = match frame.jpeg(82) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            publish_artifact_event(
+                &state,
+                "SNAPSHOT_CAPTURE_FAILED",
+                &id,
+                &actor,
+                &correlation_id,
+                None,
+                "failure",
+            );
+            return artifact_error(
+                StatusCode::BAD_GATEWAY,
+                "SNAPSHOT_CAPTURE_FAILED",
+                "The current video frame could not be encoded.",
+            );
+        }
+    };
+    match state
+        .artifacts
+        .store(
+            &id,
+            ArtifactType::Snapshot,
+            "image/jpeg",
+            bytes,
+            None,
+            None,
+            Some(frame.width),
+            Some(frame.height),
+            Some(false),
+            None,
+            None,
+            None,
+            actor.clone(),
+            correlation_id.clone(),
+            "decoded_frame_buffer".into(),
+        )
+        .await
+    {
+        Ok(artifact) => {
+            publish_artifact_event(
+                &state,
+                "SNAPSHOT_CAPTURE_SUCCEEDED",
+                &id,
+                &actor,
+                &correlation_id,
+                Some(&artifact.artifact_id),
+                "success",
+            );
+            (StatusCode::CREATED, Json(artifact)).into_response()
+        }
+        Err(_) => {
+            publish_artifact_event(
+                &state,
+                "SNAPSHOT_CAPTURE_FAILED",
+                &id,
+                &actor,
+                &correlation_id,
+                None,
+                "failure",
+            );
+            artifact_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ARTIFACT_STORAGE_UNAVAILABLE",
+                "Snapshot storage is unavailable.",
+            )
+        }
+    }
+}
+
+async fn capture_clip(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    principal: Option<axum::extract::Extension<Principal>>,
+    request: Option<Json<ClipCaptureRequest>>,
+) -> Response {
+    let actor = request_actor(principal.as_ref().map(|principal| &principal.0));
+    let correlation_id = request_correlation(&headers, "clip");
+    let seconds = request
+        .and_then(|request| request.0.duration_seconds)
+        .unwrap_or(state.clip_default_duration_seconds);
+    if seconds == 0 || seconds > state.clip_max_duration_seconds {
+        return artifact_error(
+            StatusCode::BAD_REQUEST,
+            "CLIP_DURATION_INVALID",
+            &format!(
+                "Clip duration must be between 1 and {} seconds.",
+                state.clip_max_duration_seconds
+            ),
+        );
+    }
+    let _permit = match state.artifact_capture_semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return artifact_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "CAPTURE_BUSY",
+                "Too many captures are in progress.",
+            )
+        }
+    };
+    publish_artifact_event(
+        &state,
+        "CLIP_CAPTURE_REQUESTED",
+        &id,
+        &actor,
+        &correlation_id,
+        None,
+        "started",
+    );
+    match state
+        .sources
+        .capture_clip(
+            &id,
+            std::time::Duration::from_secs(seconds),
+            state.artifacts.clone(),
+            actor.clone(),
+            correlation_id.clone(),
+        )
+        .await
+    {
+        Ok(artifact) => {
+            publish_artifact_event(
+                &state,
+                "CLIP_CAPTURE_SUCCEEDED",
+                &id,
+                &actor,
+                &correlation_id,
+                Some(&artifact.artifact_id),
+                "success",
+            );
+            (StatusCode::CREATED, Json(artifact)).into_response()
+        }
+        Err(error) => {
+            publish_artifact_event(
+                &state,
+                "CLIP_CAPTURE_FAILED",
+                &id,
+                &actor,
+                &correlation_id,
+                None,
+                "failure",
+            );
+            let message = error.to_string();
+            let code = if message == "CAPTURE_TIMEOUT" {
+                "CAPTURE_TIMEOUT"
+            } else if message == "CLIP_CAPTURE_FAILED" {
+                "CLIP_CAPTURE_FAILED"
+            } else {
+                "CLIP_CAPTURE_UNAVAILABLE"
+            };
+            artifact_error(
+                StatusCode::BAD_GATEWAY,
+                code,
+                if code == "CAPTURE_TIMEOUT" {
+                    "Clip capture timed out."
+                } else {
+                    "The requested clip could not be captured."
+                },
+            )
+        }
+    }
+}
+
+async fn media_artifact_metadata(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.artifacts.metadata(&id).await {
+        Ok(artifact) => (StatusCode::OK, Json(artifact)).into_response(),
+        Err(_) => artifact_error(
+            StatusCode::NOT_FOUND,
+            "ARTIFACT_NOT_FOUND",
+            "Media artifact was not found.",
+        ),
+    }
+}
+
+async fn media_artifact_content(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match state.artifacts.read(&id).await {
+        Ok((artifact, bytes)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, artifact.content_type)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| {
+                artifact_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ARTIFACT_RESPONSE_FAILED",
+                    "Artifact response could not be created.",
+                )
+            }),
+        Err(_) => artifact_error(
+            StatusCode::NOT_FOUND,
+            "ARTIFACT_NOT_FOUND",
+            "Media artifact was not found.",
+        ),
+    }
+}
+
+async fn delete_media_artifact(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    principal: Option<axum::extract::Extension<Principal>>,
+) -> Response {
+    match state.artifacts.delete(&id).await {
+        Ok(artifact) => {
+            let actor = request_actor(principal.as_ref().map(|principal| &principal.0));
+            let correlation_id = request_correlation(&headers, "artifact-delete");
+            publish_artifact_event(
+                &state,
+                "MEDIA_ARTIFACT_DELETED",
+                &artifact.source_id,
+                &actor,
+                &correlation_id,
+                Some(&id),
+                "success",
+            );
+            (StatusCode::NO_CONTENT, Body::empty()).into_response()
+        }
+        Err(_) => artifact_error(
+            StatusCode::NOT_FOUND,
+            "ARTIFACT_NOT_FOUND",
+            "Media artifact was not found.",
+        ),
     }
 }
 async fn inspect_onvif(
@@ -807,6 +1198,15 @@ async fn remove_playback(
 async fn media_gateway_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(state.sources.media_gateway_health().await)
 }
+async fn source_media_telemetry(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.sources.refresh_media_telemetry(&id).await {
+        Ok(telemetry) => (StatusCode::OK, Json(telemetry)).into_response(),
+        Err(error) => manager_error(error).into_response(),
+    }
+}
 fn media_error(error: SourceManagerError) -> (StatusCode, Json<serde_json::Value>) {
     let status = match &error {
         SourceManagerError::NotFound => StatusCode::NOT_FOUND,
@@ -952,7 +1352,7 @@ mod security_tests {
         );
         assert_eq!(
             required_authority("/api/v1/sources/camera/playback", &axum::http::Method::GET),
-            Some(Authority::ViewStream)
+            Some(Authority::ViewAudio)
         );
         assert_eq!(
             required_authority("/api/v1/sources/camera/ptz/move", &axum::http::Method::POST),
@@ -961,6 +1361,35 @@ mod security_tests {
         assert_eq!(
             required_authority("/api/v1/onboarding/discover", &axum::http::Method::POST),
             Some(Authority::RunOnboarding)
+        );
+        assert_eq!(
+            required_authority("/api/v1/sources/camera/media", &axum::http::Method::GET),
+            Some(Authority::ViewDiagnostics)
+        );
+        assert_eq!(
+            required_authority(
+                "/api/v1/sources/camera/snapshots",
+                &axum::http::Method::POST
+            ),
+            Some(Authority::CaptureSnapshot)
+        );
+        assert_eq!(
+            required_authority("/api/v1/sources/camera/clips", &axum::http::Method::POST),
+            Some(Authority::CaptureClip)
+        );
+        assert_eq!(
+            required_authority(
+                "/api/v1/media-artifacts/artifact-1/content",
+                &axum::http::Method::GET
+            ),
+            Some(Authority::ViewMediaArtifact)
+        );
+        assert_eq!(
+            required_authority(
+                "/api/v1/media-artifacts/artifact-1",
+                &axum::http::Method::DELETE
+            ),
+            Some(Authority::DeleteMediaArtifact)
         );
     }
 }

@@ -1,0 +1,57 @@
+schema: sentinel-streaming.physical-certification/v1
+evidenceClass: PHYSICAL_DEVICE
+resultStates: [PASS, PASS_WITH_LIMITATIONS, FAIL, NOT_SUPPORTED, NOT_TESTED]
+required:
+  - vendor
+  - model
+  - firmwareVersion
+  - certificationDate
+  - sentinelVersion
+  - result
+fields:
+  vendor: string
+  model: string
+  hardwareRevision: string|null
+  firmwareVersion: string
+  onvifProfiles: [string]
+  networkTransport: string
+  discovery: result
+  authentication: result
+  deviceInformation: result
+  mediaProfiles: result
+  rtspUriRetrieval: result
+  rtspValidation: result
+  videoCodec: string|null
+  resolutions: [string]
+  fps: number|null
+  audioPresence: result
+  audioCodec: string|null
+  audioSampleRate: number|null
+  audioChannels: number|null
+  rtspAudio: result
+  webRtcAudio: result
+  hlsAudio: result
+  clipAudio: result
+  snapshot: result
+  events: result
+  ptz: result
+  continuousMove: result
+  relativeMove: result
+  absoluteMove: result
+  zoom: result
+  presets: result
+  webRtcPlayback: result
+  hlsPlayback: result
+  onboarding: result
+  healthMonitoring: result
+  recoveryAfterDisconnect: result
+  mediaTelemetry: result
+  reconnectBehavior: result
+  longRunningStability: result
+  knownQuirks: [string]
+  certificationDate: string
+  sentinelVersion: string
+  sentinelCommit: string
+  evidenceReference: string
+result:
+  enum: [PASS, PASS_WITH_LIMITATIONS, FAIL, NOT_SUPPORTED, NOT_TESTED]

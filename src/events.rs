@@ -178,7 +178,7 @@ impl EventBus {
         self.store.clone()
     }
 }
-pub(crate) fn now_ms() -> u128 {
+pub fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

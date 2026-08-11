@@ -34,3 +34,17 @@ TLS reverse proxy. This is an explicit remaining CR-5 gap.
 Sentinel Streaming supports pluggable persistence. SQLite is an optional
 embedded backend for standalone deployments; it is not a mandatory dependency
 of the runtime or security implementation.
+# Media artifact security
+
+Snapshots and clips are consequential operational outputs. Capture, viewing,
+and deletion use separate authorities and are enforced server-side; browser
+JavaScript cannot bypass the service boundary. Events retain actor, source,
+artifact, and correlation information without credentials or raw FFmpeg/RTSP
+secrets. Artifact metadata exposes logical references only.
+## Audio privacy boundary
+
+Audio is transport-only in SS-WP-013. The existing role model includes the
+explicit `VIEW_AUDIO` authority so deployments can separate audio access from
+other stream access when policy requires it. Admin playback starts muted and
+requires an operator action to unmute. No microphone, talk-back, or transport
+credential is exposed to the browser.

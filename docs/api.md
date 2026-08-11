@@ -59,6 +59,8 @@ sources and onboarding. Authorization is enforced server-side.
 | POST | `/api/v1/sources/{id}/playback/register` | Register validated RTSP source with the media gateway |
 | DELETE | `/api/v1/sources/{id}/playback/register` | Remove source from the media gateway |
 | GET | `/api/v1/media-gateway/health` | Normalized media-delivery health |
+| GET | `/api/v1/media/health` | Normalized media-delivery health alias |
+| GET | `/api/v1/sources/{id}/media` | Normalized supervised media telemetry |
 | GET | `/api/v1/sources/{id}/ptz` | PTZ capability and supported operations |
 | POST | `/api/v1/sources` | Register a supported source definition |
 | POST | `/api/v1/sources/{id}/start` | Start a source |
@@ -117,6 +119,7 @@ Playback API access requires an authenticated principal with `VIEW_STREAM`.
 Browser URLs contain no camera or MediaMTX admin credentials. Direct MediaMTX
 listener protection still requires trusted listener binding or an authenticated
 TLS reverse proxy until per-viewer MediaMTX authorization is provisioned.
+Media telemetry is operationally sensitive and requires `VIEW_DIAGNOSTICS`.
 
 ## Examples
 
@@ -171,3 +174,23 @@ Credentials are resolved only when the worker starts and are never included in
 source status, metrics, or logs. The RTSP adapter currently uses an FFmpeg
 process configured through `SENTINEL_FFMPEG` (default: `ffmpeg`) and emits raw
 RGB frames into the existing pipeline.
+# Media artifacts
+
+- `POST /api/v1/sources/{id}/snapshots` captures a JPEG from the latest decoded frame.
+- `POST /api/v1/sources/{id}/clips` captures a bounded MP4 clip. Body: `{ "duration_seconds": 10 }`.
+- `GET /api/v1/media-artifacts/{id}` returns normalized metadata.
+- `GET /api/v1/media-artifacts/{id}/content` returns artifact bytes.
+- `DELETE /api/v1/media-artifacts/{id}` deletes an artifact.
+
+Capture requires `CAPTURE_SNAPSHOT` or `CAPTURE_CLIP`; viewing requires
+`VIEW_MEDIA_ARTIFACT`; deletion requires `DELETE_MEDIA_ARTIFACT`. All capture
+events include an actor and correlation ID. Artifact responses never expose
+source credentials or filesystem paths.
+# API audio fields
+
+`GET /api/v1/sources/{id}/media` and source representations may include
+`audioPresent`, `audioCodec`, `audioSampleRate`, `audioChannels`,
+`audioDeliveryState`, and `lastAudioActivity`. Null values mean the underlying
+ONVIF/RTSP/MediaMTX layer did not expose that measurement; they are not claims
+that audio is absent. Artifact metadata includes `audioPresent` and observed
+audio fields for bounded clips.

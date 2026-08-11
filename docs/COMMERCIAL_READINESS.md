@@ -8,15 +8,20 @@ physical-camera certification.
 | Gate | Requirement | Current status |
 |---|---|---|
 | CR-1 Installation | Fresh supported machine reaches a working installation with minimal infrastructure. | In progress; local Rust/FFmpeg/MediaMTX instructions exist, packaging is not complete. |
-| CR-2 Camera onboarding | Non-technical operator discovers and adds a supported camera without constructing RTSP URLs. | Partial; SS-WP-008 flow implemented, happy-path and physical-device evidence remain. |
-| CR-3 Live playback | Reliable WebRTC live view with HLS/LL-HLS fallback where appropriate. | Partial; local MediaMTX verification passed, broad browser/device certification remains. |
-| CR-4 Recovery | Camera, network, and media-gateway failures recover predictably without retry storms. | Partial; source recovery exists, automatic MediaMTX re-registration remains. |
+| CR-2 Camera onboarding | Non-technical operator discovers and adds a supported camera without constructing RTSP URLs. | Partial; SS-WP-008 flow and the physical onboarding checklist exist, but no physical device report is recorded yet. |
+| CR-3 Live playback | Reliable WebRTC live view with HLS/LL-HLS fallback where appropriate. | Partial; local MediaMTX verification, muted/user-controlled audio playback, and media telemetry exist; physical browser/device certification remains. |
+| CR-4 Recovery | Camera, network, and media-gateway failures recover predictably without retry storms. | Partial; bounded source/media supervision and physical failure procedure exist, no physical-device recovery report is recorded yet. |
 | CR-5 Security | Credentials protected and consequential controls require authority. | Partial; bearer roles, server-side PTZ authority, redaction, audit events, and TLS deployment guidance are implemented; direct MediaMTX per-viewer authorization and durable identity/secret rotation remain. |
-| CR-6 Interoperability | Multiple real camera vendors/models/firmware versions are certified. | Not started; emulator evidence is separate. |
-| CR-7 Stability | 24-hour, 72-hour, and 7-day soak tests are available and tracked. | Partial; endurance tooling exists, long-duration certification is pending. |
-| CR-8 Observability | Operators can distinguish camera, RTSP, ONVIF, MediaMTX, browser, credential, configuration, network, and recovery failures. | Partial; normalized source/media failures exist, diagnostics/support bundle remains. |
+| CR-6 Interoperability | Multiple real camera vendors/models/firmware versions are certified. | Framework ready; audio evidence fields are defined, but no physical-device results are recorded, so not started. |
+| CR-7 Stability | 24-hour, 72-hour, and 7-day soak tests are available and tracked. | Framework and report fields ready; physical long-duration evidence pending. |
+| CR-8 Observability | Operators can distinguish camera, RTSP, ONVIF, MediaMTX, browser, credential, configuration, network, and recovery failures. | Partial; normalized source/media/audio evidence and physical failure capture procedure exist; device reports and browser diagnostics remain. |
 | CR-9 Upgradeability | Supported configuration survives upgrades and migrations. | Not started; persistence/migration strategy remains. |
 | CR-10 API stability | External clients can rely on documented versioned service contracts. | Partial; `/api/v1` exists, compatibility policy and release discipline remain. |
+
+SS-WP-012 adds operator-requested snapshot and bounded-clip evidence capture.
+It improves CR-3 and CR-8 by making media outputs inspectable, but does not
+complete continuous recording, retention policy, backup/restore, or a durable
+evidence-management product.
 
 ## Evidence classes
 

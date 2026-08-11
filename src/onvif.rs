@@ -25,9 +25,20 @@ pub struct PtzCapabilities {
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioCapability {
+    pub supported: bool,
+    pub codec: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u16>,
+    pub transport_available: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, Default)]
 pub struct CameraCapabilities {
     pub video: bool,
     pub audio: bool,
+    pub audio_details: AudioCapability,
     pub snapshot: bool,
     pub events: bool,
     pub ptz: PtzCapabilities,
@@ -40,6 +51,9 @@ pub struct MediaProfile {
     pub resolution: Option<String>,
     pub frame_rate: Option<f32>,
     pub audio: bool,
+    pub audio_codec: Option<String>,
+    pub audio_sample_rate: Option<u32>,
+    pub audio_channels: Option<u16>,
     pub rtsp_uri: Option<String>,
     #[serde(skip)]
     pub(crate) token: Option<String>,
@@ -732,6 +746,20 @@ fn normalize_capabilities(
         video: !profiles.is_empty(),
         audio: profiles.iter().any(|profile| profile.audio)
             || contains_any(media, &["AudioSourceConfiguration"]),
+        audio_details: profiles
+            .iter()
+            .find(|profile| profile.audio)
+            .map(|profile| AudioCapability {
+                supported: true,
+                codec: profile.audio_codec.clone(),
+                sample_rate: profile.audio_sample_rate,
+                channels: profile.audio_channels,
+                transport_available: Some(profile.rtsp_uri.is_some()),
+            })
+            .unwrap_or_else(|| AudioCapability {
+                supported: false,
+                ..Default::default()
+            }),
         snapshot: false,
         events: contains_any(capabilities, &["Events", "EventXAddr"]),
         ptz,
@@ -771,6 +799,10 @@ fn parse_profiles(xml: &str) -> Vec<MediaProfile> {
                     block,
                     &["AudioSourceConfiguration", "AudioEncoderConfiguration"],
                 ),
+                audio_codec: tag_value(block, "AudioEncoding"),
+                audio_sample_rate: tag_value(block, "SampleRate")
+                    .and_then(|value| value.parse().ok()),
+                audio_channels: tag_value(block, "Channels").and_then(|value| value.parse().ok()),
                 rtsp_uri: None,
                 token: attribute(&xml[start..open_end], "token"),
             });
@@ -1022,6 +1054,13 @@ mod tests {
         let capabilities = CameraCapabilities {
             video: true,
             audio: true,
+            audio_details: AudioCapability {
+                supported: true,
+                codec: Some("AAC".into()),
+                sample_rate: Some(48_000),
+                channels: Some(1),
+                transport_available: Some(true),
+            },
             snapshot: false,
             events: true,
             ptz: PtzCapabilities {
@@ -1049,6 +1088,9 @@ mod tests {
                         resolution: Some("1920x1080".into()),
                         frame_rate: Some(25.0),
                         audio: true,
+                        audio_codec: Some("AAC".into()),
+                        audio_sample_rate: Some(48_000),
+                        audio_channels: Some(1),
                         rtsp_uri: Some("rtsp://admin:secret@camera/main".into()),
                         token: Some("main-token".into()),
                     },
@@ -1058,6 +1100,9 @@ mod tests {
                         resolution: Some("640x360".into()),
                         frame_rate: Some(15.0),
                         audio: false,
+                        audio_codec: None,
+                        audio_sample_rate: None,
+                        audio_channels: None,
                         rtsp_uri: Some("rtsp://camera/sub".into()),
                         token: Some("sub-token".into()),
                     },

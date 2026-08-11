@@ -15,3 +15,8 @@ the service remains available for RTSP, ONVIF, PTZ, and health operations.
 
 MediaMTX administrative URLs and path configuration never appear in normalized
 playback responses.
+
+SS-WP-010 also queries structured MediaMTX path telemetry through the adapter.
+The result is normalized into Sentinel's `MediaTelemetry` contract and is
+supervised independently from RTSP source health. Gateway outages produce
+`UNAVAILABLE` media state while preserving the source's own health state.

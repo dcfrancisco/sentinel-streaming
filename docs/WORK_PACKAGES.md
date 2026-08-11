@@ -150,4 +150,74 @@ Implemented scope:
 
 Explicitly not included: enterprise SSO, durable local users/sessions, token
 rotation, CSRF-protected cookie sessions, per-viewer MediaMTX authorization,
-media telemetry, physical-camera certification, or SS-WP-010 and later work.
+ physical-camera certification, or SS-WP-010 and later work.
+
+## SS-WP-010 — Media Telemetry and Stream Supervision
+
+Implemented scope:
+
+- normalized `MediaTelemetry` and explicit media-delivery state model;
+- structured MediaMTX path/health inspection without exposing MediaMTX response shapes;
+- bounded periodic `MediaSupervisor` with one in-flight check per source;
+- startup timeout, stale/no-activity detection, bitrate delta, reconnect accounting, and recovery observation;
+- separate source health and media health in source APIs/admin;
+- authenticated telemetry API and product-language admin status;
+- normalized media operational events and configurable thresholds.
+
+Explicitly not included: physical-camera certification, recording, audio or AI
+intelligence, automatic gateway re-registration orchestration, per-viewer
+MediaMTX authorization, PostgreSQL, pgvector, or SS-WP-011 and later work.
+
+## SS-WP-011 — Physical Camera Interoperability and Certification Harness
+
+Implemented scope:
+
+- structured physical-device matrix schema and result states;
+- repeatable certification procedure covering onboarding, ONVIF, RTSP,
+  browser playback, PTZ, telemetry, failures, recovery, security, and soak;
+- human-readable report template and sanitized evidence guidance;
+- non-destructive normalized API capture harness;
+- explicit `PHYSICAL_DEVICE` separation from emulator and local MediaMTX evidence.
+
+## SS-WP-012 — Recording, Snapshots, and Evidence Capture Foundation
+
+Implemented scope:
+
+- bounded on-demand JPEG snapshots from the latest decoded frame;
+- bounded FFmpeg RTSP short clips with configurable default/max duration;
+- pluggable `MediaArtifactStore` and local filesystem backend;
+- normalized artifact metadata, SHA-256 checksum, provenance, correlation ID,
+  and retention hooks;
+- separate capture/view/delete authorities and operational events;
+- protected artifact metadata/content/delete APIs and minimal Admin capture UI;
+- bounded concurrent captures and credential/path redaction.
+
+Explicitly not included: continuous NVR recording, database blobs, automated
+retention deletion, audio intelligence, AI interpretation, physical-camera
+certification, or SS-WP-013 and later work packages.
+
+No physical camera was available for this work package, so no certification
+result is claimed. Physical PTZ and failure actions remain operator-confirmed.
+
+Explicitly not included: new camera features, AI/audio intelligence, recording,
+enterprise SSO, per-viewer MediaMTX authorization, PostgreSQL, pgvector, or
+SS-WP-012 and later work.
+
+## SS-WP-013 — Audio Transport and Media Capability Support
+
+Implemented scope:
+
+- normalized ONVIF audio encoder/profile metadata;
+- MediaMTX audio-track detection and provider-neutral audio telemetry;
+- explicit audio delivery states distinct from video delivery health;
+- muted, user-controlled Admin browser audio playback when an audio track is
+  available;
+- optional audio-preserving bounded clips and audio artifact metadata;
+- `VIEW_AUDIO` authority included in existing role boundaries;
+- deterministic unit, protocol, emulator, and media-contract coverage;
+- physical certification schema extended for RTSP, WebRTC, HLS, and clip audio.
+
+Explicitly not included: speech recognition, sound-event AI, transcription,
+talk-back/two-way audio, continuous NVR, physical-camera certification,
+packaging, diagnostics bundles, soak testing, PostgreSQL, pgvector, or
+SS-WP-014 and later.

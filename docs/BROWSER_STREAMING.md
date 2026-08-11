@@ -21,6 +21,11 @@ Playback API calls require `VIEW_STREAM`. The adapter does not yet provision
 per-viewer MediaMTX authorization; keep direct MediaMTX WebRTC/HLS listeners
 private or place them behind an authenticated TLS reverse proxy.
 
+Operations can inspect normalized media readiness and last activity through
+`GET /api/v1/sources/{id}/media`. A ready browser protocol does not by itself
+prove that frames are currently flowing; the supervisor's activity/stall state
+is shown separately.
+
 ## Local moving-video verification
 
 SS-WP-007A uses `tools/rtsp-test-source/start.sh`, which publishes a moving

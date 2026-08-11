@@ -38,16 +38,34 @@ workflows belong in downstream products.
 | Health and metrics | Implemented | Liveness, readiness, runtime status, and Prometheus-compatible metrics. |
 | Self-healing runtime | Implemented | Reconnect and recovery paths with backoff, events, and metrics. |
 | API-backed CLI | Implemented | Runtime, source, metrics, configuration, authentication, and profile commands. |
+| Snapshots and bounded clips | Implemented foundation | On-demand filesystem-backed artifacts with normalized metadata and protected APIs; continuous NVR is not implemented. |
+| Camera audio transport | Implemented foundation | ONVIF/MediaMTX audio metadata, audio telemetry, muted browser playback controls, and optional audio-preserving bounded clips; no audio intelligence or talk-back. |
+
+## Project status
+
+The current implementation baseline is SS-WP-013. Completed work covers RTSP
+validation, bounded source recovery, ONVIF discovery and capability-driven PTZ,
+MediaMTX browser playback, zero-friction onboarding, authentication and roles,
+media telemetry/supervision, physical-camera certification tooling, bounded
+snapshots/clips, and camera audio transport metadata/playback.
+
+The next planned package is SS-WP-014: standalone packaging and service
+installation. This repository is not yet a commercial release: physical camera
+certification, packaging, long-duration soak evidence, upgrade/migration policy,
+and complete per-viewer playback authorization remain open.
+
+All automated validation for SS-WP-013 passes with the required format, test,
+build, clippy (`-D warnings`), and diff checks.
 
 ## Current implementation boundary
 
 The current release is a strong streaming and operations foundation. The
 following capabilities are intentionally not implemented yet:
 
-- Persistent recording and evidence storage.
+- Continuous NVR recording and automated retention.
 - Ring-buffer persistence beyond process memory.
-- Production-grade media supervision, browser compatibility certification, and
-  automated MediaMTX orchestration beyond the verified local integration slice.
+- Browser compatibility certification and automated MediaMTX orchestration
+  beyond the verified local integration slice.
 - Proprietary vendor-specific camera control and cloud integrations.
 - Physical-camera PTZ/media certification and vendor-specific ONVIF extensions.
 - H.265-specific support.
@@ -112,11 +130,19 @@ MediaMTX is optional. Without it, Sentinel continues RTSP, ONVIF, PTZ, and
 health operations while browser playback reports normalized media-gateway
 unavailability.
 
+Media telemetry and supervision distinguish source health from media delivery,
+including gateway readiness, last activity, observed bitrate, and stalled-stream
+state. See [docs/MEDIA_TELEMETRY.md](docs/MEDIA_TELEMETRY.md).
+
 For real local playback verification, see [docs/MEDIAMTX.md](docs/MEDIAMTX.md)
 and run the development-only [RTSP test source](tools/rtsp-test-source/README.md).
 
 Commercial readiness status and quality gates are tracked in
 [docs/COMMERCIAL_READINESS.md](docs/COMMERCIAL_READINESS.md).
+
+Physical-camera interoperability is certified separately from emulator and
+local MediaMTX evidence. See [docs/certification/README.md](docs/certification/README.md)
+for the matrix schema, repeatable procedure, and sanitized capture harness.
 
 Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` by default and exposes:
 

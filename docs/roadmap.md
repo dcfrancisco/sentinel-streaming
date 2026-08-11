@@ -22,42 +22,23 @@ and Buildings remain separate domain applications.
 - SS-WP-007A: real local MediaMTX v1.20.0 plus deterministic FFmpeg RTSP source;
   registration, WHEP/HLS endpoints, browser moving-video acceptance, failure,
   restart, and re-registration evidence.
+- SS-WP-008: discovery-first onboarding with automatic profile selection, RTSP
+  validation, MediaGateway registration, readiness checks, and Admin setup flow.
+- SS-WP-009: bearer authentication, roles, authority checks, secret redaction,
+  security events, and playback security boundaries.
+- SS-WP-010: normalized media telemetry, MediaMTX inspection, bounded stream
+  supervision, watchdog thresholds, and separate source/media health.
+- SS-WP-011: physical-device certification schema, procedures, evidence
+  templates, and non-destructive capture tooling; no physical result is claimed.
+- SS-WP-012: bounded snapshots and clips, pluggable artifact storage, checksums,
+  provenance, retention metadata, and protected artifact APIs.
+- SS-WP-013: ONVIF/MediaMTX audio capability metadata, audio telemetry, muted
+  browser audio controls, optional audio-preserving clips, and `VIEW_AUDIO`.
 
 ## Current product roadmap
 
-### SS-WP-008 — Zero-friction camera onboarding
-
-Discover, select, authenticate only when required, inspect capabilities, select a
-usable media profile automatically, validate RTSP, register media delivery,
-preview in the browser, test PTZ when supported, assign name/location, and
-report readiness. Manual RTSP remains an Advanced path.
-
-### SS-WP-009 — Authentication, roles, secrets, and playback security
-
-Add product-grade operator/admin roles, secret handling, TLS deployment guidance,
-secure playback access, audit policy, correlation, and rate limiting where
-justified.
-
-### SS-WP-010 — Media telemetry and stream supervision
-
-Add codec, resolution, FPS, bitrate, delivery-state telemetry, watchdogs,
-degraded-media detection, and bounded media recovery/re-registration.
-
-### SS-WP-011 — Physical-camera interoperability and certification
-
-Build a vendor/model/firmware compatibility harness and certify ONVIF, RTSP,
-audio, PTZ, presets, browser playback, reconnect, recovery, and long-running
-behavior against real devices.
-
-### SS-WP-012 — Snapshot/recording foundation
-
-Add only if product requirements justify it, behind explicit storage and
-retention boundaries.
-
-### SS-WP-013 — Audio transport and support
-
-Add camera-compatible audio transport and validation separately from future audio
-intelligence.
+SS-WP-003 through SS-WP-013 are complete in the current repository. The next
+planned implementation package is SS-WP-014.
 
 ### SS-WP-014 — Standalone packaging and service installation
 

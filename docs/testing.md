@@ -159,3 +159,28 @@ configuration and emits normalized authentication/authorization events.
 These tests are local unit/API tests, not an enterprise identity or physical
 deployment certification. Direct MediaMTX authorization remains a documented
 deployment boundary.
+
+## SS-WP-010 media supervision tests
+
+Media tests cover normalized telemetry serialization, source-health/media-health
+separation, unavailable gateways, stale-media-to-stalled transitions,
+reconnect accounting, route authority classification, and configuration of
+bounded supervision thresholds. Fake-gateway tests are deterministic unit and
+integration evidence; they are not physical-camera or browser certification.
+
+## SS-WP-011 physical-device certification
+
+Physical certification is classified `PHYSICAL_DEVICE` and requires a completed
+report from `docs/certification/TEMPLATE.md`, a matrix entry matching
+`MATRIX_SCHEMA.yaml`, and sanitized API/browser/failure evidence. The capture
+helper reads normalized source, capability, media, gateway-health, and playback
+endpoints but never sends PTZ or destructive device commands. PTZ movement,
+power-cycle, network-disconnect, and soak observations require explicit human
+operator execution and recording.
+# Media artifact tests
+
+Artifact-store tests are `UNIT` tests and use temporary local directories.
+Snapshot behavior uses deterministic frame-buffer fixtures. Clip capture is
+bounded and uses the FFmpeg process boundary; tests that invoke FFmpeg should
+be classified as local integration tests. These tests do not certify a
+physical camera or continuous recording behavior.

@@ -41,3 +41,16 @@ This work package does not supervise decoded media, restart FFmpeg, or provide
 full RecoveryEngine orchestration for video/audio pipelines. RTSP validation
 still proves endpoint control-plane usability only; it does not prove decoded
 video, audio, browser playback, AI readiness, or physical-camera compatibility.
+## Media delivery supervision
+
+Media delivery is tracked separately from camera/source health. The
+`MediaSupervisor` checks registered media paths on a bounded interval and can
+report `STARTING`, `READY`, `DEGRADED`, `STALLED`, `UNAVAILABLE`, or
+`RECOVERING` without changing the RTSP source health. It emits `MEDIA_READY`,
+`MEDIA_DEGRADED`, `MEDIA_STALLED`, `MEDIA_GATEWAY_UNAVAILABLE`,
+`MEDIA_GATEWAY_RESTORED`, and recovery events when state changes.
+
+The supervisor uses bounded concurrency and one in-flight check per source.
+Startup and stale-activity thresholds are configurable; it does not scrape
+logs or start an unbounded retry loop. Source reconnection remains owned by the
+existing source `HealthMonitor`/`RecoveryEngine`.

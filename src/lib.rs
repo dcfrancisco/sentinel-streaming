@@ -11,6 +11,7 @@ pub mod frame_buffer;
 pub mod health;
 pub mod logging;
 pub mod media;
+pub mod media_artifacts;
 pub mod metrics;
 pub mod mjpeg;
 pub mod onboarding;

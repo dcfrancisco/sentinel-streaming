@@ -4,9 +4,10 @@ use crate::{
     events::{Event, EventBus, EventRecord},
     frame::Frame,
     media::{
-        MediaDeliveryHealth, MediaGateway, MediaGatewayStatus, MediaMtxAdapter,
-        MediaSourceRegistration, PlaybackInfo,
+        MediaDeliveryHealth, MediaDeliveryState, MediaGateway, MediaGatewayStatus, MediaMtxAdapter,
+        MediaSourceRegistration, MediaTelemetry, PlaybackInfo,
     },
+    media_artifacts::{ArtifactType, MediaArtifact, MediaArtifactStore},
     onboarding::{
         check, OnboardingCompletion, OnboardingDraft, OnboardingFailure, OnboardingSessionView,
     },
@@ -34,12 +35,13 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UdpSocket;
+use tokio::process::Command as TokioCommand;
 use tokio::sync::{mpsc as tokio_mpsc, watch, Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 
@@ -603,6 +605,7 @@ pub struct SourceInfo {
     pub next_recovery_at: Option<u128>,
     pub capabilities: Option<CameraCapabilities>,
     pub media_health: MediaDeliveryHealth,
+    pub media_telemetry: MediaTelemetry,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct AddSource {
@@ -911,12 +914,123 @@ pub struct VideoSourceManager {
     onvif: OnvifClient,
     media_gateway: Arc<dyn MediaGateway>,
     health_config: crate::config::HealthConfig,
+    media_supervision_config: crate::config::MediaSupervisionConfig,
+    media_inflight: Arc<Mutex<HashSet<String>>>,
+    media_supervisor_started: Arc<AtomicBool>,
     health_semaphore: Arc<Semaphore>,
     health_inflight: Arc<Mutex<HashSet<String>>>,
     onboarding: Arc<RwLock<BTreeMap<String, OnboardingDraft>>>,
     next_onboarding_id: Arc<AtomicU64>,
 }
 impl VideoSourceManager {
+    pub async fn capture_clip(
+        &self,
+        id: &str,
+        duration: Duration,
+        store: Arc<dyn MediaArtifactStore>,
+        requested_by: String,
+        correlation_id: String,
+    ) -> Result<MediaArtifact, SourceManagerError> {
+        let (uri, credentials, audio) = {
+            let sources = self.sources.read().await;
+            let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+            if entry.info.kind != "rtsp" {
+                return Err(SourceManagerError::Unsupported(
+                    "clip capture requires an RTSP source".into(),
+                ));
+            }
+            if !matches!(entry.info.validation, ValidationState::Validated) {
+                return Err(SourceManagerError::InvalidRequest(
+                    "validate the RTSP source before capturing a clip".into(),
+                ));
+            }
+            (
+                entry.options.uri.clone().ok_or_else(|| {
+                    SourceManagerError::InvalidRequest("RTSP source URI is missing".into())
+                })?,
+                entry.options.credentials.clone(),
+                entry.info.capabilities.as_ref().map(|capabilities| {
+                    (
+                        capabilities.audio,
+                        capabilities.audio_details.codec.clone(),
+                        capabilities.audio_details.sample_rate,
+                        capabilities.audio_details.channels,
+                    )
+                }),
+            )
+        };
+        let uri = add_rtsp_credentials(uri, credentials)
+            .map_err(|error| SourceManagerError::InvalidRequest(error.to_string()))?;
+        let temp_path = std::env::temp_dir().join(format!(
+            "sentinel-clip-{}-{}.mp4",
+            std::process::id(),
+            now_ms()
+        ));
+        let ffmpeg = std::env::var("SENTINEL_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let output_path = temp_path.clone();
+        let seconds = duration.as_secs_f64();
+        let command = TokioCommand::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-rtsp_transport",
+                "tcp",
+                "-i",
+                &uri,
+                "-t",
+                &format!("{seconds:.3}"),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-c",
+                "copy",
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+            ])
+            .arg(&output_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        let output = tokio::time::timeout(duration + Duration::from_secs(20), command)
+            .await
+            .map_err(|_| SourceManagerError::Camera("CAPTURE_TIMEOUT".into()))?
+            .map_err(|error| SourceManagerError::Camera(format!("clip capture failed: {error}")))?;
+        if !output.status.success() {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(SourceManagerError::Camera("CLIP_CAPTURE_FAILED".into()));
+        }
+        let bytes = tokio::fs::read(&temp_path)
+            .await
+            .map_err(|_| SourceManagerError::Camera("CLIP_CAPTURE_FAILED".into()))?;
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        store
+            .store(
+                id,
+                ArtifactType::Clip,
+                "video/mp4",
+                bytes,
+                Some(duration.as_millis() as u64),
+                None,
+                None,
+                None,
+                audio.as_ref().map(|value| value.0),
+                audio.as_ref().and_then(|value| value.1.clone()),
+                audio.as_ref().and_then(|value| value.2),
+                audio.as_ref().and_then(|value| value.3),
+                requested_by,
+                correlation_id,
+                "ffmpeg_rtsp_copy".into(),
+            )
+            .await
+            .map_err(|error| {
+                SourceManagerError::Camera(format!("artifact storage failed: {error}"))
+            })
+    }
+
     pub fn new(
         fps: u32,
         events: EventBus,
@@ -958,6 +1072,7 @@ impl VideoSourceManager {
             next_recovery_at: None,
             capabilities: None,
             media_health: MediaDeliveryHealth::Unknown,
+            media_telemetry: unknown_media_telemetry("builtin"),
         };
         let mut sources = BTreeMap::new();
         sources.insert(
@@ -997,6 +1112,9 @@ impl VideoSourceManager {
                 Duration::from_secs(3),
             )),
             health_config: crate::config::HealthConfig::default(),
+            media_supervision_config: crate::config::MediaSupervisionConfig::default(),
+            media_inflight: Arc::new(Mutex::new(HashSet::new())),
+            media_supervisor_started: Arc::new(AtomicBool::new(false)),
             health_semaphore: Arc::new(Semaphore::new(4)),
             health_inflight: Arc::new(Mutex::new(HashSet::new())),
             onboarding: Arc::new(RwLock::new(BTreeMap::new())),
@@ -1023,6 +1141,13 @@ impl VideoSourceManager {
     pub fn with_health_config(mut self, config: crate::config::HealthConfig) -> Self {
         self.health_semaphore = Arc::new(Semaphore::new(config.max_concurrent_checks.max(1)));
         self.health_config = config;
+        self
+    }
+    pub fn with_media_supervision_config(
+        mut self,
+        config: crate::config::MediaSupervisionConfig,
+    ) -> Self {
+        self.media_supervision_config = config;
         self
     }
     pub async fn list(&self) -> Vec<SourceInfo> {
@@ -1102,6 +1227,7 @@ impl VideoSourceManager {
             next_recovery_at: None,
             capabilities: None,
             media_health: MediaDeliveryHealth::Unknown,
+            media_telemetry: unknown_media_telemetry(&request.id),
         };
         sources.insert(
             request.id,
@@ -1403,6 +1529,172 @@ impl VideoSourceManager {
 
     pub async fn media_gateway_health(&self) -> MediaGatewayStatus {
         self.media_gateway.health().await
+    }
+
+    pub async fn media_telemetry(&self, id: &str) -> Result<MediaTelemetry, SourceManagerError> {
+        let sources = self.sources.read().await;
+        let entry = sources.get(id).ok_or(SourceManagerError::NotFound)?;
+        Ok(entry.info.media_telemetry.clone())
+    }
+
+    pub async fn refresh_media_telemetry(
+        &self,
+        id: &str,
+    ) -> Result<MediaTelemetry, SourceManagerError> {
+        if !self.sources.read().await.contains_key(id) {
+            return Err(SourceManagerError::NotFound);
+        }
+        self.run_media_cycle(id).await;
+        self.media_telemetry(id).await
+    }
+
+    pub fn spawn_media_supervisor(&self) -> Option<JoinHandle<()>> {
+        if !self.media_supervision_config.enabled {
+            return None;
+        }
+        if self
+            .media_supervisor_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+        let manager = self.clone();
+        let mut shutdown = self.shutdown.clone();
+        let interval = Duration::from_millis(self.media_supervision_config.interval_ms.max(100));
+        Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => manager.supervise_media_once().await,
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { break; }
+                    }
+                }
+            }
+        }))
+    }
+
+    pub async fn supervise_media_once(&self) {
+        let ids = self
+            .sources
+            .read()
+            .await
+            .values()
+            .filter(|entry| entry.info.media_health != MediaDeliveryHealth::Unknown)
+            .map(|entry| entry.info.id.clone())
+            .collect::<Vec<_>>();
+        let mut tasks = Vec::new();
+        for id in ids {
+            let inserted = {
+                let mut inflight = self.media_inflight.lock().await;
+                inflight.insert(id.clone())
+            };
+            if !inserted {
+                continue;
+            }
+            let manager = self.clone();
+            let semaphore = self.health_semaphore.clone();
+            tasks.push(tokio::spawn(async move {
+                let Ok(permit) = semaphore.acquire_owned().await else {
+                    manager.media_inflight.lock().await.remove(&id);
+                    return;
+                };
+                manager.run_media_cycle(&id).await;
+                drop(permit);
+                manager.media_inflight.lock().await.remove(&id);
+            }));
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
+    async fn run_media_cycle(&self, id: &str) {
+        let previous = match self.sources.read().await.get(id) {
+            Some(entry) => entry.info.media_telemetry.clone(),
+            None => return,
+        };
+        let mut telemetry = match self.media_gateway.telemetry(id).await {
+            Ok(telemetry) => telemetry,
+            Err(error) => unknown_media_telemetry_with_state(
+                id,
+                MediaDeliveryState::Unavailable,
+                Some(error.message),
+            ),
+        };
+        let now = crate::events::now_ms();
+        if let Some(last_activity) = telemetry.last_media_activity {
+            let stale_for = now.saturating_sub(last_activity);
+            let threshold = if telemetry.delivery_state == MediaDeliveryState::Starting {
+                self.media_supervision_config.startup_timeout_ms
+            } else {
+                self.media_supervision_config.stall_timeout_ms
+            };
+            if stale_for > threshold as u128 {
+                telemetry.delivery_state = MediaDeliveryState::Stalled;
+                telemetry.detail = Some("Video stream appears stalled.".into());
+            }
+        } else if telemetry.delivery_state == MediaDeliveryState::Starting {
+            if let Some(started) = telemetry.stream_started_at {
+                if now.saturating_sub(started)
+                    > self.media_supervision_config.startup_timeout_ms as u128
+                {
+                    telemetry.delivery_state = MediaDeliveryState::Stalled;
+                    telemetry.detail =
+                        Some("Media did not become active before the startup timeout.".into());
+                }
+            }
+        }
+        let previous_state = previous.delivery_state.clone();
+        let previous_gateway = previous.gateway_state.clone();
+        let new_state = telemetry.delivery_state.clone();
+        if let Some(entry) = self.sources.write().await.get_mut(id) {
+            entry.info.media_health = match &telemetry.delivery_state {
+                MediaDeliveryState::Ready => MediaDeliveryHealth::Healthy,
+                MediaDeliveryState::Unknown => MediaDeliveryHealth::Unknown,
+                MediaDeliveryState::Unavailable => MediaDeliveryHealth::Unavailable,
+                MediaDeliveryState::Starting
+                | MediaDeliveryState::Degraded
+                | MediaDeliveryState::Stalled
+                | MediaDeliveryState::Recovering => MediaDeliveryHealth::Degraded,
+            };
+            entry.info.media_telemetry = telemetry.clone();
+        }
+        if previous_state != new_state || previous_gateway != telemetry.gateway_state {
+            let event_type = match (&new_state, &previous_state, &telemetry.gateway_state) {
+                (MediaDeliveryState::Ready, old, _) if *old == MediaDeliveryState::Unavailable => {
+                    "MEDIA_RECOVERED"
+                }
+                (MediaDeliveryState::Ready, _, _) => "MEDIA_READY",
+                (MediaDeliveryState::Stalled, _, _) => "MEDIA_STALLED",
+                (MediaDeliveryState::Unavailable, _, _) => "MEDIA_GATEWAY_UNAVAILABLE",
+                (MediaDeliveryState::Recovering, _, _) => "MEDIA_RECOVERY_STARTED",
+                (_, _, MediaDeliveryHealth::Healthy)
+                    if previous_gateway == MediaDeliveryHealth::Unavailable =>
+                {
+                    "MEDIA_GATEWAY_RESTORED"
+                }
+                _ => "MEDIA_DEGRADED",
+            };
+            let mut record = EventRecord::simple(
+                event_type,
+                Some(id.into()),
+                telemetry
+                    .detail
+                    .clone()
+                    .unwrap_or_else(|| format!("Media delivery state is {:?}.", new_state)),
+            );
+            record.metadata = serde_json::json!({
+                "sourceId": id,
+                "state": new_state,
+                "gatewayState": telemetry.gateway_state,
+                "reconnectCount": telemetry.reconnect_count,
+                "lastMediaActivity": telemetry.last_media_activity,
+                "outcome": "observed"
+            });
+            self.events.publish_record(record);
+        }
     }
 
     pub async fn register_playback(&self, id: &str) -> Result<PlaybackInfo, SourceManagerError> {
@@ -2562,6 +2854,39 @@ impl VideoSourceManager {
     }
 }
 
+fn unknown_media_telemetry(source_id: &str) -> MediaTelemetry {
+    unknown_media_telemetry_with_state(source_id, MediaDeliveryState::Unknown, None)
+}
+
+fn unknown_media_telemetry_with_state(
+    source_id: &str,
+    delivery_state: MediaDeliveryState,
+    detail: Option<String>,
+) -> MediaTelemetry {
+    MediaTelemetry {
+        source_id: source_id.into(),
+        protocol: None,
+        codec: None,
+        resolution: None,
+        observed_fps: None,
+        bitrate_bps: None,
+        audio_present: None,
+        audio_codec: None,
+        audio_sample_rate: None,
+        audio_channels: None,
+        audio_bitrate_bps: None,
+        audio_delivery_state: crate::media::AudioDeliveryState::Unknown,
+        last_audio_activity: None,
+        stream_started_at: None,
+        last_media_activity: None,
+        reconnect_count: 0,
+        delivery_state,
+        playback_protocols: Vec::new(),
+        gateway_state: MediaDeliveryHealth::Unknown,
+        detail,
+    }
+}
+
 fn resolve_credentials(credentials: Option<&RtspCredentials>) -> (Option<String>, Option<String>) {
     let Some(credentials) = credentials else {
         return (None, None);
@@ -2876,8 +3201,8 @@ fn validate_move(request: &PtzMoveRequest) -> Result<(f32, f32, f32), SourceMana
 mod onvif_handoff_tests {
     use super::*;
     use crate::onvif::{
-        emulator::OnvifEmulator, CameraCapabilities, MediaProfile, OnvifDevice, OnvifInspection,
-        PtzCapabilities,
+        emulator::OnvifEmulator, AudioCapability, CameraCapabilities, MediaProfile, OnvifDevice,
+        OnvifInspection, PtzCapabilities,
     };
     use async_trait::async_trait;
 
@@ -2905,6 +3230,7 @@ mod onvif_handoff_tests {
                 capabilities: CameraCapabilities {
                     video: true,
                     audio: false,
+                    audio_details: AudioCapability::default(),
                     snapshot: false,
                     events: true,
                     ptz: PtzCapabilities {
@@ -2924,6 +3250,9 @@ mod onvif_handoff_tests {
                     resolution: Some("1280x720".into()),
                     frame_rate: Some(25.0),
                     audio: false,
+                    audio_codec: None,
+                    audio_sample_rate: None,
+                    audio_channels: None,
                     rtsp_uri: Some("rtsp://camera/main".into()),
                     token: Some("profile-token".into()),
                 }],
@@ -3061,6 +3390,13 @@ mod onvif_handoff_tests {
                 capabilities: CameraCapabilities {
                     video: true,
                     audio: true,
+                    audio_details: AudioCapability {
+                        supported: true,
+                        codec: Some("AAC".into()),
+                        sample_rate: Some(48_000),
+                        channels: Some(1),
+                        transport_available: Some(true),
+                    },
                     snapshot: true,
                     events: true,
                     ptz: PtzCapabilities::default(),
@@ -3072,6 +3408,9 @@ mod onvif_handoff_tests {
                         resolution: Some("640x360".into()),
                         frame_rate: Some(15.0),
                         audio: false,
+                        audio_codec: None,
+                        audio_sample_rate: None,
+                        audio_channels: None,
                         rtsp_uri: Some("rtsp://camera/low".into()),
                         token: Some("low-token".into()),
                     },
@@ -3081,6 +3420,9 @@ mod onvif_handoff_tests {
                         resolution: Some("1920x1080".into()),
                         frame_rate: Some(25.0),
                         audio: true,
+                        audio_codec: Some("AAC".into()),
+                        audio_sample_rate: Some(48_000),
+                        audio_channels: Some(1),
                         rtsp_uri: Some("rtsp://camera/main".into()),
                         token: Some("main-token".into()),
                     },

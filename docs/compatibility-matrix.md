@@ -16,6 +16,15 @@ compatible. Add a row only after completing the human functional test guide.
 | Local MediaMTX test source | Manual RTSP URL | Yes, RTSP/TCP | Yes | Not evaluated | Not applicable | WebRTC endpoint + HLS fallback verified | Yes | `LOCAL_MEDIAMTX_INTEGRATION`; not physical certification |
 | Cloud-only camera | Usually no local discovery | No without documented local adapter | No | Unknown | Unknown | No | No | Not compatible by default |
 
+## Physical-device certification schema
+
+Physical entries use the structured schema in
+`docs/certification/MATRIX_SCHEMA.yaml` and the result states `PASS`,
+`PASS_WITH_LIMITATIONS`, `FAIL`, `NOT_SUPPORTED`, or `NOT_TESTED`. Start from
+`docs/certification/MATRIX_ENTRY_TEMPLATE.yaml`; write the human-readable
+report from `docs/certification/TEMPLATE.md`. The capture helper is
+`tools/physical-certification/capture.sh`.
+
 ## Device certification fields
 
 For a real model, add:
@@ -26,7 +35,8 @@ For a real model, add:
 - discovery method and result
 - ONVIF profile and service capability results
 - stream URI type, codec, resolution, FPS
-- audio support and verification result
+- audio advertised, codec, sample rate, channels, RTSP/WebRTC/HLS transport,
+  clip preservation, and verification result
 - PTZ operations and preset support, if applicable
 - WebRTC and HLS/LL-HLS playback results through the media gateway
 - authentication behavior

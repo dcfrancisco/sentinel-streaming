@@ -185,6 +185,20 @@ function render(sources) {
      ['Last success', source.last_successful_validation],
      ['Last recovery success', source.last_recovery_succeeded],
      ['Last recovery exhausted', source.last_recovery_exhausted],
+     ['Media state', source.media_telemetry && source.media_telemetry.deliveryState],
+     ['Protocol', source.media_telemetry && source.media_telemetry.protocol],
+     ['Codec', source.media_telemetry && source.media_telemetry.codec],
+     ['Resolution', source.media_telemetry && source.media_telemetry.resolution],
+     ['Observed FPS', source.media_telemetry && source.media_telemetry.observedFps],
+     ['Bitrate', source.media_telemetry && source.media_telemetry.bitrateBps ? `${Math.round(source.media_telemetry.bitrateBps / 1000)} kbps` : null],
+     ['Audio', source.media_telemetry && source.media_telemetry.audioPresent === true ? 'Available' : source.media_telemetry && source.media_telemetry.audioPresent === false ? 'Not available' : null],
+     ['Audio codec', source.media_telemetry && source.media_telemetry.audioCodec],
+     ['Audio sample rate', source.media_telemetry && source.media_telemetry.audioSampleRate ? `${source.media_telemetry.audioSampleRate} Hz` : null],
+     ['Audio channels', source.media_telemetry && source.media_telemetry.audioChannels],
+     ['Audio transport', source.media_telemetry && source.media_telemetry.audioDeliveryState],
+     ['Audio activity', source.media_telemetry && source.media_telemetry.lastAudioActivity ? new Date(Number(source.media_telemetry.lastAudioActivity)).toLocaleTimeString() : null],
+     ['Last activity', source.media_telemetry && source.media_telemetry.lastMediaActivity ? new Date(Number(source.media_telemetry.lastMediaActivity)).toLocaleTimeString() : null],
+     ['Playback', source.media_telemetry && (source.media_telemetry.playbackProtocols || []).join(', ')],
      ['Capabilities', source.capabilities ? `Video: ${source.capabilities.video ? 'Yes' : 'No'}; Audio: ${source.capabilities.audio ? 'Yes' : 'No'}; PTZ: ${source.capabilities.ptz && source.capabilities.ptz.supported ? 'Supported' : 'Not supported'}` : 'Not inspected']].forEach(([label, value]) => {
       const dt = document.createElement('dt'); dt.textContent = label;
       const dd = document.createElement('dd'); dd.textContent = text(value);
@@ -206,6 +220,12 @@ function render(sources) {
       } finally { button.disabled = false; }
     });
     card.append(title, details, button);
+    if (source.media_telemetry && source.media_telemetry.detail) {
+      const mediaMessage = document.createElement('p');
+      mediaMessage.className = source.media_telemetry.deliveryState === 'READY' ? 'healthy' : 'unhealthy';
+      mediaMessage.textContent = source.media_telemetry.detail;
+      card.append(mediaMessage);
+    }
     if (source.type === 'rtsp') {
       const live = document.createElement('section');
       const liveTitle = document.createElement('h3');
@@ -227,9 +247,14 @@ function render(sources) {
           const webrtc = (playback.streams || []).find(stream => stream.protocol === 'webrtc');
           const hls = (playback.streams || []).find(stream => stream.protocol === 'hls');
           if (webrtc && window.RTCPeerConnection) {
-            const peer = new RTCPeerConnection();
-            peer.ontrack = event => { if (event.streams[0]) video.srcObject = event.streams[0]; };
-            peer.addTransceiver('video', {direction: 'recvonly'});
+          const peer = new RTCPeerConnection();
+          peer.ontrack = event => { if (event.streams[0]) video.srcObject = event.streams[0]; };
+          peer.addTransceiver('video', {direction: 'recvonly'});
+            const audio = source.media_telemetry && source.media_telemetry.audioPresent === true;
+            if (audio) peer.addTransceiver('audio', {direction: 'recvonly'});
+            video.muted = true;
+            video.autoplay = true;
+            video.playsInline = true;
             const offer = await peer.createOffer();
             await peer.setLocalDescription(offer);
             const answer = await fetch(webrtc.url, {method: 'POST', headers: {'content-type': 'application/sdp'}, body: offer.sdp});
@@ -239,8 +264,42 @@ function render(sources) {
           } else if (hls) { video.src = hls.url; }
         } finally { play.disabled = false; }
       });
-      live.append(liveTitle, status, play, video);
+      const audioToggle = document.createElement('button');
+      audioToggle.textContent = 'Unmute audio';
+      audioToggle.disabled = !(source.media_telemetry && source.media_telemetry.audioPresent === true);
+      audioToggle.addEventListener('click', () => {
+        video.muted = !video.muted;
+        audioToggle.textContent = video.muted ? 'Unmute audio' : 'Mute audio';
+        if (!video.muted) video.play().catch(() => {});
+      });
+      live.append(liveTitle, status, play, audioToggle, video);
       card.append(live);
+      const capture = document.createElement('section');
+      const captureTitle = document.createElement('h3');
+      captureTitle.textContent = 'Capture';
+      const snapshot = document.createElement('button');
+      snapshot.textContent = 'Capture snapshot';
+      const clip = document.createElement('button');
+      clip.textContent = 'Capture 10s clip';
+      const captureStatus = document.createElement('p');
+      async function captureArtifact(path, body) {
+        const response = await fetch(`/api/v1/sources/${encodeURIComponent(source.id)}/${path}`, {
+          method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body || {})
+        });
+        const result = await response.json();
+        if (!response.ok) { captureStatus.textContent = result.error || 'Capture failed.'; captureStatus.className = 'unhealthy'; return; }
+        captureStatus.className = 'healthy';
+        captureStatus.textContent = `${result.artifactType || 'Artifact'} captured.`;
+        const link = document.createElement('a');
+        link.href = `/api/v1/media-artifacts/${encodeURIComponent(result.artifactId)}/content`;
+        link.textContent = result.artifactType === 'CLIP' ? 'Download clip' : 'Download snapshot';
+        link.target = '_blank';
+        captureStatus.append(' ', link);
+      }
+      snapshot.addEventListener('click', () => captureArtifact('snapshots'));
+      clip.addEventListener('click', () => captureArtifact('clips', {duration_seconds: 10}));
+      capture.append(captureTitle, snapshot, clip, captureStatus);
+      card.append(capture);
     }
     const ptz = source.capabilities && source.capabilities.ptz;
     if (ptz && ptz.supported) {

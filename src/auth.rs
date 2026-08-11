@@ -116,11 +116,16 @@ pub fn current() -> anyhow::Result<(String, Profile, String)> {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Authority {
     ViewStream,
+    ViewAudio,
     ViewSource,
     ManageSource,
     RunOnboarding,
     ControlPtz,
     ViewDiagnostics,
+    CaptureSnapshot,
+    CaptureClip,
+    ViewMediaArtifact,
+    DeleteMediaArtifact,
     AdministerSystem,
 }
 
@@ -134,21 +139,35 @@ pub enum Role {
 impl Role {
     pub fn authorities(&self) -> &'static [Authority] {
         match self {
-            Self::Viewer => &[Authority::ViewStream, Authority::ViewSource],
+            Self::Viewer => &[
+                Authority::ViewStream,
+                Authority::ViewAudio,
+                Authority::ViewSource,
+                Authority::ViewMediaArtifact,
+            ],
             Self::Operator => &[
                 Authority::ViewStream,
+                Authority::ViewAudio,
                 Authority::ViewSource,
                 Authority::ControlPtz,
                 Authority::ViewDiagnostics,
+                Authority::CaptureSnapshot,
+                Authority::CaptureClip,
+                Authority::ViewMediaArtifact,
             ],
             Self::Administrator => &[
                 Authority::ViewStream,
+                Authority::ViewAudio,
                 Authority::ViewSource,
                 Authority::ManageSource,
                 Authority::RunOnboarding,
                 Authority::ControlPtz,
                 Authority::ViewDiagnostics,
                 Authority::AdministerSystem,
+                Authority::CaptureSnapshot,
+                Authority::CaptureClip,
+                Authority::ViewMediaArtifact,
+                Authority::DeleteMediaArtifact,
             ],
         }
     }

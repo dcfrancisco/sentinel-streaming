@@ -12,6 +12,7 @@ pub struct Config {
     pub fps: u32,
     pub rtsp_validation_timeout_ms: u64,
     pub media_gateway: MediaGatewayConfig,
+    pub media_supervision: MediaSupervisionConfig,
     pub recovery: RecoveryConfig,
     pub pipeline: PipelineConfig,
     pub buffer: BufferConfig,
@@ -42,6 +43,24 @@ impl Default for MediaGatewayConfig {
             webrtc_base_url: None,
             hls_base_url: None,
             timeout_ms: 3000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MediaSupervisionConfig {
+    pub enabled: bool,
+    pub interval_ms: u64,
+    pub stall_timeout_ms: u64,
+    pub startup_timeout_ms: u64,
+}
+impl Default for MediaSupervisionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_ms: 1000,
+            stall_timeout_ms: 5000,
+            startup_timeout_ms: 10000,
         }
     }
 }
@@ -309,6 +328,7 @@ impl Default for Config {
             fps: 30,
             rtsp_validation_timeout_ms: 5000,
             media_gateway: MediaGatewayConfig::default(),
+            media_supervision: MediaSupervisionConfig::default(),
             recovery: RecoveryConfig::default(),
             pipeline: PipelineConfig::default(),
             buffer: BufferConfig::default(),
@@ -344,6 +364,7 @@ struct FileConfig {
     fps: Option<u32>,
     rtsp_validation_timeout_ms: Option<u64>,
     media_gateway: Option<MediaGatewayPatch>,
+    media_supervision: Option<MediaSupervisionPatch>,
     recovery: Option<RecoveryPatch>,
     pipeline: Option<PipelinePatch>,
     buffer: Option<BufferPatch>,
@@ -362,6 +383,13 @@ struct MediaGatewayPatch {
     webrtc_base_url: Option<String>,
     hls_base_url: Option<String>,
     timeout_ms: Option<u64>,
+}
+#[derive(Debug, Default, Deserialize)]
+struct MediaSupervisionPatch {
+    enabled: Option<bool>,
+    interval_ms: Option<u64>,
+    stall_timeout_ms: Option<u64>,
+    startup_timeout_ms: Option<u64>,
 }
 #[derive(Debug, Default, Deserialize)]
 struct ServerPatch {
@@ -487,6 +515,9 @@ impl Config {
         if let Some(media_gateway) = file.media_gateway {
             merge_media_gateway(&mut self.media_gateway, media_gateway);
         }
+        if let Some(media_supervision) = file.media_supervision {
+            merge_media_supervision(&mut self.media_supervision, media_supervision);
+        }
         if let Some(p) = file.pipeline {
             merge_pipeline(&mut self.pipeline, p);
         }
@@ -573,6 +604,18 @@ impl Config {
         if let Some(v) = env_string("SENTINEL_MEDIAMTX_HLS_BASE_URL") {
             self.media_gateway.hls_base_url = Some(v);
         }
+        if let Some(v) = env_bool("SENTINEL_MEDIA_SUPERVISION_ENABLED")? {
+            self.media_supervision.enabled = v;
+        }
+        if let Some(v) = env_u64("SENTINEL_MEDIA_SUPERVISION_INTERVAL_MS")? {
+            self.media_supervision.interval_ms = v;
+        }
+        if let Some(v) = env_u64("SENTINEL_MEDIA_STALL_TIMEOUT_MS")? {
+            self.media_supervision.stall_timeout_ms = v;
+        }
+        if let Some(v) = env_u64("SENTINEL_MEDIA_STARTUP_TIMEOUT_MS")? {
+            self.media_supervision.startup_timeout_ms = v;
+        }
         if let Some(v) = env_bool("SENTINEL_VISION_ENABLED")? {
             self.vision.enabled = v;
         }
@@ -603,6 +646,14 @@ impl Config {
         if self.media_gateway.timeout_ms == 0 || self.media_gateway.timeout_ms > 60_000 {
             return Err(ConfigError::Invalid(
                 "media_gateway.timeout_ms must be between 1 and 60000".into(),
+            ));
+        }
+        if self.media_supervision.interval_ms == 0
+            || self.media_supervision.stall_timeout_ms == 0
+            || self.media_supervision.startup_timeout_ms == 0
+        {
+            return Err(ConfigError::Invalid(
+                "media supervision interval and timeouts must be greater than zero".into(),
             ));
         }
         if self.media_gateway.kind != "mediamtx" {
@@ -852,6 +903,20 @@ fn merge_media_gateway(dst: &mut MediaGatewayConfig, p: MediaGatewayPatch) {
         dst.timeout_ms = value;
     }
 }
+fn merge_media_supervision(dst: &mut MediaSupervisionConfig, p: MediaSupervisionPatch) {
+    if let Some(value) = p.enabled {
+        dst.enabled = value;
+    }
+    if let Some(value) = p.interval_ms {
+        dst.interval_ms = value;
+    }
+    if let Some(value) = p.stall_timeout_ms {
+        dst.stall_timeout_ms = value;
+    }
+    if let Some(value) = p.startup_timeout_ms {
+        dst.startup_timeout_ms = value;
+    }
+}
 fn parse_duration(value: &str) -> Result<u64, ConfigError> {
     let value = value.trim();
     let (number, multiplier) = value
@@ -959,5 +1024,28 @@ mod tests {
         assert!(json.contains("FRONT_PASSWORD"));
         assert!(!json.contains("actual-secret"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn media_supervision_environment_thresholds_are_loaded() {
+        let _guard = CONFIG_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        std::env::set_var("SENTINEL_MEDIA_SUPERVISION_INTERVAL_MS", "250");
+        std::env::set_var("SENTINEL_MEDIA_STALL_TIMEOUT_MS", "1500");
+        std::env::set_var("SENTINEL_MEDIA_STARTUP_TIMEOUT_MS", "3000");
+        let config = Config::load(
+            PathBuf::from("/tmp/sentinel-missing-config.yaml"),
+            None,
+            Some("synthetic"),
+        )
+        .unwrap();
+        std::env::remove_var("SENTINEL_MEDIA_SUPERVISION_INTERVAL_MS");
+        std::env::remove_var("SENTINEL_MEDIA_STALL_TIMEOUT_MS");
+        std::env::remove_var("SENTINEL_MEDIA_STARTUP_TIMEOUT_MS");
+        assert_eq!(config.media_supervision.interval_ms, 250);
+        assert_eq!(config.media_supervision.stall_timeout_ms, 1500);
+        assert_eq!(config.media_supervision.startup_timeout_ms, 3000);
     }
 }

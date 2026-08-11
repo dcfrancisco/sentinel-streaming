@@ -44,3 +44,11 @@ process, then run `./tools/rtsp-test-source/start.sh`. The publisher, MediaMTX,
 and Sentinel are three separate processes. This is a
 `LOCAL_MEDIAMTX_INTEGRATION` test profile only; it does not certify physical
 cameras or production deployment orchestration.
+# Media artifact deployment
+
+Install FFmpeg when short-clip capture is required. Set
+`SENTINEL_FFMPEG` when the executable is not on `PATH`. Set
+`SENTINEL_MEDIA_ARTIFACT_ROOT` to a writable local filesystem location with
+appropriate operator-only permissions. This work package does not add a
+database, continuous recording service, backup worker, or object-storage
+adapter.
