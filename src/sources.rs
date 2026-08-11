@@ -2719,6 +2719,21 @@ impl VideoSourceManager {
         });
         Ok(self.snapshot(&entry.info, entry.started_at, entry.disconnected_at))
     }
+
+    /// Stop every configured source during process shutdown so capture workers
+    /// release their frame channels before the pipeline tasks are joined.
+    pub async fn shutdown_sources(&self) {
+        let ids = self
+            .sources
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.stop(&id).await;
+        }
+    }
     pub async fn restart(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
         self.stop(id).await.ok();
         let result = self.start(id).await?;

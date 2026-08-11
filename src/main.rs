@@ -178,6 +178,7 @@ async fn serve(
             shutdown_tx.send(true).ok();
         }
     }
+    state.sources.shutdown_sources().await;
     let _ = server_task.await;
     let _ = pipeline_task.await;
     state.sources.shutdown_media_gateway().await;
