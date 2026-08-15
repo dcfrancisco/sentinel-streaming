@@ -13,6 +13,13 @@ camera integration, media delivery, stream health, recovery, operational APIs,
 and administration. Product-specific policy, alarms, notifications, and domain
 workflows belong in downstream products.
 
+The first embedded topology is one Sentinel Streaming edge instance per home or
+managed site. Sentinel Home owns household tenancy and security policy;
+Streaming owns camera protocols, lifecycle, media delivery, and its own
+setup/operations console. The current decoded runtime remains single-active-
+source until SS-WP-015B implements per-source runtime isolation. See the
+[platform integration boundary](docs/platform-integration.md).
+
 ## Product capabilities
 
 | Capability | Status | Description |
@@ -40,22 +47,28 @@ workflows belong in downstream products.
 | API-backed CLI | Implemented | Runtime, source, metrics, configuration, authentication, and profile commands. |
 | Snapshots and bounded clips | Implemented foundation | On-demand filesystem-backed artifacts with normalized metadata and protected APIs; continuous NVR is not implemented. |
 | Camera audio transport | Implemented foundation | ONVIF/MediaMTX audio metadata, audio telemetry, muted browser playback controls, and optional audio-preserving bounded clips; no audio intelligence or talk-back. |
+| Standalone packaging | Implemented foundation | macOS release bundle, user-local LaunchAgent installer, secure bootstrap, config validation, predictable directories, and safe uninstall; no Docker or database required. |
 
 ## Project status
 
-The current implementation baseline is SS-WP-013. Completed work covers RTSP
+The current implementation baseline is SS-WP-014. Completed work covers RTSP
 validation, bounded source recovery, ONVIF discovery and capability-driven PTZ,
 MediaMTX browser playback, zero-friction onboarding, authentication and roles,
 media telemetry/supervision, physical-camera certification tooling, bounded
-snapshots/clips, and camera audio transport metadata/playback.
+snapshots/clips, camera audio transport metadata/playback, and the macOS
+standalone packaging foundation. CR-1 clean-machine evidence remains open.
 
-The next planned package is SS-WP-014: standalone packaging and service
-installation. This repository is not yet a commercial release: physical camera
-certification, packaging, long-duration soak evidence, upgrade/migration policy,
+The next planned package is SS-WP-015: diagnostics and support bundle. This
+repository is not yet a commercial release: physical camera
+certification, long-duration soak evidence, upgrade/migration policy,
 and complete per-viewer playback authorization remain open.
 
-All automated validation for SS-WP-013 passes with the required format, test,
-build, clippy (`-D warnings`), and diff checks.
+See [docs/INSTALLATION.md](docs/INSTALLATION.md) for the macOS standalone
+install path and [docs/STANDALONE_DEPLOYMENT.md](docs/STANDALONE_DEPLOYMENT.md)
+for filesystem, service, MediaMTX, and readiness details.
+
+The automated Rust validation suite passes for the current implementation with
+the required format, test, build, clippy (`-D warnings`), and diff checks.
 
 ## Current implementation boundary
 
@@ -144,7 +157,8 @@ Physical-camera interoperability is certified separately from emulator and
 local MediaMTX evidence. See [docs/certification/README.md](docs/certification/README.md)
 for the matrix schema, repeatable procedure, and sanitized capture harness.
 
-Run the daemon with `cargo run -- serve`. The administration API listens on `0.0.0.0:8080` by default and exposes:
+Run the daemon with `cargo run -- serve`. The development default listens on
+loopback at `127.0.0.1:8080` in `OPEN_LOCAL_TEST` mode and exposes:
 
 - `GET /health/live`
 - `GET /health/ready`
@@ -170,7 +184,9 @@ Run the daemon with `cargo run -- serve`. The administration API listens on `0.0
 - `GET /api/v1/vision/latest`
 - `GET /api/v1/streams/{source_id}/mjpeg`
 
-When `SENTINEL_API_TOKEN` is set, all administration endpoints except liveness,
+With `security.mode: OPEN_LOCAL_TEST`, the local Admin/API surface is available
+without a token and the service requires a loopback bind. With
+`security.mode: LOCAL_ADMIN_AUTH`, administration endpoints except liveness,
 readiness, and version require `Authorization: Bearer <token>`.
 
 The CLI is API-backed and includes `serve`, `status`, `stop`, `version`,

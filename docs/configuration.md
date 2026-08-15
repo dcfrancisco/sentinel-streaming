@@ -23,6 +23,12 @@ does not exist, built-in defaults are used.
 server:
   bind: 0.0.0.0:8080
 
+instance_id: site-a-streaming
+deployment_profile: embedded-edge
+
+security:
+  mode: LOCAL_ADMIN_AUTH
+
 vision:
   provider: openai
   enabled: true
@@ -72,6 +78,10 @@ SENTINEL_BUFFER_CAPACITY=600
 Operational variables remain supported: `OPENAI_API_KEY`, `SENTINEL_API_TOKEN`,
 `SENTINEL_CAMERA_INDEX`, and `SENTINEL_FFMPEG`. RTSP passwords must use
 `username_env` and `password_env` references rather than clear text.
+
+`SENTINEL_SECURITY_MODE` overrides the file value with `OPEN_LOCAL_TEST`,
+`LOCAL_ADMIN_AUTH`, or `EXTERNAL_IDENTITY`. `OPEN_LOCAL_TEST` is loopback-only;
+`EXTERNAL_IDENTITY` is reserved for the future identity integration boundary.
 
 ## CLI overrides
 

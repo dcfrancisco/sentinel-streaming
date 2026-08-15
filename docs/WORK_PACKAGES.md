@@ -221,3 +221,86 @@ Explicitly not included: speech recognition, sound-event AI, transcription,
 talk-back/two-way audio, continuous NVR, physical-camera certification,
 packaging, diagnostics bundles, soak testing, PostgreSQL, pgvector, or
 SS-WP-014 and later.
+
+## SS-WP-014 — Packaging / Standalone Deployment
+
+Implemented scope:
+
+- first supported standalone platform: macOS user-local LaunchAgent deployment;
+- versioned release bundle builder using the locked Rust release build;
+- optional operator-supplied sibling MediaMTX binary with no silent downloads;
+- predictable runtime/config/state/artifact/log directories;
+- idempotent installer that preserves existing configuration;
+- secure generated bootstrap administrator token;
+- service start, restart-on-failure, stop, and uninstall tooling;
+- `check-config` and small `doctor` commands with product-language output;
+- readiness, service, MediaMTX boundary, licensing, and uninstall documentation.
+
+Explicitly not included: Docker, mandatory database, SQLite integration,
+MediaMTX child-process ownership, full diagnostics/support bundle, log rotation,
+upgrade/migration engine, soak testing, remote access, physical certification,
+PostgreSQL, pgvector, or SS-WP-015 and later.
+
+Product-gate status: implementation complete; CR-1 remains partial until a clean
+supported machine completes documented installation, service startup, and
+usable `/admin` verification in under 15 minutes with evidence recorded.
+
+## Planned foundational packages
+
+### SS-WP-015 — Operational Observability and Diagnostics Bundle
+
+Implementation status: initial contract and local operator slice implemented;
+full package acceptance remains open for broader diagnostics and evidence.
+
+Planned scope includes actionable diagnostics, sanitized support-bundle export,
+stable failure attribution, structured logs/metrics, correlation and causation,
+instance/source identity, dependency versions, readiness explanations, and
+security-mode reporting. In `OPEN_LOCAL_TEST`, `doctor`, local support-bundle
+collection, and smoke tests must work without credentials; authenticated modes
+must retain their normal authorization requirements.
+
+### SS-WP-015A — Embeddable Platform Contract
+
+Planned scope:
+
+- stable `StreamingInstanceId`, immutable `CameraId`, and external references;
+- replaceable authentication seam and resource-scoped authorization semantics;
+- versioned API, error, integration-event, artifact-reference, and playback-grant contracts;
+- standalone and embedded-edge deployment profiles;
+- reference client and consumer-driven contract tests;
+- explicit pre-Sentinel Home production acceptance gate.
+
+Explicitly not included: Home household/user/policy models, centralized
+multi-tenancy, shared databases, cloud control plane, or camera protocol logic in
+domain products.
+
+### SS-WP-015B — Concurrent Multi-Camera Runtime
+
+Planned scope:
+
+- source-scoped pipeline, bounded frame buffer, preview, MJPEG, and Vision state;
+- source-scoped snapshot/clip capture context, health, and recovery;
+- concurrent source lifecycle with failure and backpressure isolation;
+- per-source and per-instance resource accounting and configured limits;
+- deterministic proof that source-addressed APIs return the requested source's state;
+- multi-camera integration and graceful-shutdown coverage.
+
+This package implements ADR 0008. Until it is complete, the registered
+multi-source API must not be represented as a concurrent decoded multi-camera
+runtime.
+
+## Planned engineering tooling
+
+### SS-TOOL-001A — Virtual Camera Lab Contract
+
+Documentation/contract-only scope: lab/data-plane separation, evidence fidelity
+classes, protocol support matrix, deterministic scenario and ground-truth
+schemas, fault taxonomy, control-plane security, headless automation, evidence
+bundle, and commercial acceptance test.
+
+### SS-TOOL-001B / SS-TOOL-001C
+
+After contract acceptance, implement a deterministic camera-facing RTSP/ONVIF
+runtime and a replayable scenario/fault engine before multi-camera soak testing.
+The dashboard follows the control-plane contracts. The lab is never installed
+with or used as a runtime dependency by Sentinel Streaming or Sentinel Home.

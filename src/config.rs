@@ -9,6 +9,9 @@ use std::{
 #[derive(Clone, Debug, Serialize)]
 pub struct Config {
     pub bind: String,
+    pub instance_id: String,
+    pub deployment_profile: String,
+    pub security: SecurityConfig,
     pub fps: u32,
     pub rtsp_validation_timeout_ms: u64,
     pub media_gateway: MediaGatewayConfig,
@@ -21,6 +24,37 @@ pub struct Config {
     pub sources: Vec<ConfiguredSource>,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct SecurityConfig {
+    pub mode: SecurityMode,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SecurityMode {
+    OpenLocalTest,
+    LocalAdminAuth,
+    ExternalIdentity,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            mode: SecurityMode::OpenLocalTest,
+        }
+    }
+}
+
+impl SecurityMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OpenLocalTest => "OPEN_LOCAL_TEST",
+            Self::LocalAdminAuth => "LOCAL_ADMIN_AUTH",
+            Self::ExternalIdentity => "EXTERNAL_IDENTITY",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -324,7 +358,10 @@ pub enum ConfigError {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            bind: "0.0.0.0:8080".into(),
+            bind: "127.0.0.1:8080".into(),
+            instance_id: "local-instance".into(),
+            deployment_profile: "standalone".into(),
+            security: SecurityConfig::default(),
             fps: 30,
             rtsp_validation_timeout_ms: 5000,
             media_gateway: MediaGatewayConfig::default(),
@@ -361,6 +398,9 @@ impl Default for Config {
 struct FileConfig {
     server: Option<ServerPatch>,
     bind: Option<String>,
+    instance_id: Option<String>,
+    deployment_profile: Option<String>,
+    security: Option<SecurityPatch>,
     fps: Option<u32>,
     rtsp_validation_timeout_ms: Option<u64>,
     media_gateway: Option<MediaGatewayPatch>,
@@ -373,6 +413,17 @@ struct FileConfig {
     sources: Option<Vec<ConfiguredSource>>,
     logging: Option<LoggingPatch>,
     metrics: Option<MetricsPatch>,
+}
+#[derive(Debug, Default, Deserialize)]
+struct SecurityPatch {
+    mode: Option<SecurityModeFile>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum SecurityModeFile {
+    OpenLocalTest,
+    LocalAdminAuth,
+    ExternalIdentity,
 }
 #[derive(Debug, Default, Deserialize)]
 struct MediaGatewayPatch {
@@ -506,6 +557,21 @@ impl Config {
         if let Some(bind) = file.bind {
             self.bind = bind;
         }
+        if let Some(instance_id) = file.instance_id {
+            self.instance_id = instance_id;
+        }
+        if let Some(deployment_profile) = file.deployment_profile {
+            self.deployment_profile = deployment_profile;
+        }
+        if let Some(security) = file.security {
+            if let Some(mode) = security.mode {
+                self.security.mode = match mode {
+                    SecurityModeFile::OpenLocalTest => SecurityMode::OpenLocalTest,
+                    SecurityModeFile::LocalAdminAuth => SecurityMode::LocalAdminAuth,
+                    SecurityModeFile::ExternalIdentity => SecurityMode::ExternalIdentity,
+                };
+            }
+        }
         if let Some(fps) = file.fps {
             self.fps = fps;
         }
@@ -580,6 +646,15 @@ impl Config {
         if let Some(v) = env_string("SENTINEL_BIND") {
             self.bind = v;
         }
+        if let Some(v) = env_string("SENTINEL_INSTANCE_ID") {
+            self.instance_id = v;
+        }
+        if let Some(v) = env_string("SENTINEL_DEPLOYMENT_PROFILE") {
+            self.deployment_profile = v;
+        }
+        if let Some(v) = env_string("SENTINEL_SECURITY_MODE") {
+            self.security.mode = parse_security_mode(&v)?;
+        }
         if let Some(v) = env_u32("SENTINEL_FPS")? {
             self.fps = v;
         }
@@ -632,9 +707,27 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.bind.parse::<SocketAddr>().map_err(|_| {
+        let bind = self.bind.parse::<SocketAddr>().map_err(|_| {
             ConfigError::Invalid(format!("server.bind is not a valid address: {}", self.bind))
         })?;
+        if self.security.mode == SecurityMode::OpenLocalTest && !bind.ip().is_loopback() {
+            return Err(ConfigError::Invalid(
+                "OPEN_LOCAL_TEST requires a loopback server.bind address".into(),
+            ));
+        }
+        if self.security.mode == SecurityMode::ExternalIdentity {
+            return Err(ConfigError::Invalid(
+                "EXTERNAL_IDENTITY is reserved for the future identity integration boundary".into(),
+            ));
+        }
+        if self.instance_id.trim().is_empty() {
+            return Err(ConfigError::Invalid("instance_id must not be empty".into()));
+        }
+        if self.deployment_profile.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "deployment_profile must not be empty".into(),
+            ));
+        }
         if !(1..=240).contains(&self.fps) {
             return Err(ConfigError::Invalid("fps must be between 1 and 240".into()));
         }
@@ -958,6 +1051,18 @@ fn env_bool(name: &str) -> Result<Option<bool>, ConfigError> {
         .transpose()
 }
 
+fn parse_security_mode(value: &str) -> Result<SecurityMode, ConfigError> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "OPEN_LOCAL_TEST" => Ok(SecurityMode::OpenLocalTest),
+        "LOCAL_ADMIN_AUTH" => Ok(SecurityMode::LocalAdminAuth),
+        "EXTERNAL_IDENTITY" => Ok(SecurityMode::ExternalIdentity),
+        _ => Err(ConfigError::Invalid(
+            "SENTINEL_SECURITY_MODE must be OPEN_LOCAL_TEST, LOCAL_ADMIN_AUTH, or EXTERNAL_IDENTITY"
+                .to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1003,6 +1108,22 @@ mod tests {
         let config = Config::load(&path, None, None).unwrap();
         std::env::remove_var("SENTINEL_BIND");
         assert_eq!(config.bind, "127.0.0.1:9200");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn open_local_test_requires_loopback() {
+        let path = temp_yaml("bind: 0.0.0.0:8080\nsecurity:\n  mode: OPEN_LOCAL_TEST\n");
+        let error = Config::load(&path, None, None).unwrap_err().to_string();
+        assert!(error.contains("OPEN_LOCAL_TEST requires a loopback"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn local_admin_auth_is_explicitly_configurable() {
+        let path = temp_yaml("bind: 0.0.0.0:8080\nsecurity:\n  mode: LOCAL_ADMIN_AUTH\n");
+        let config = Config::load(&path, None, None).unwrap();
+        assert_eq!(config.security.mode, SecurityMode::LocalAdminAuth);
         fs::remove_file(path).unwrap();
     }
 

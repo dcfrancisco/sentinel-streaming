@@ -40,6 +40,11 @@ buffered RGB frame. It is intentionally bounded to one image and is the
 contract consumed by Sentinel Home for operator-triggered AI analysis. It does
 not expose the camera implementation or a raw video stream.
 
+Current limitation: the decoded runtime has one active source and one global
+frame buffer. The route validates `sourceId` but does not yet select a distinct
+source-scoped buffer. Sentinel Home must not treat this endpoint as a concurrent
+multi-camera contract until SS-WP-015B implements ADR 0008.
+
 The browser stream uses:
 
 ```text
@@ -48,6 +53,9 @@ GET /api/v1/streams/{sourceId}/mjpeg
 
 The MJPEG consumer and frame capture consumer both read from `FrameBuffer`, so
 neither can block or bypass the capture pipeline.
+
+Under ADR 0008 this invariant becomes source-scoped: both consumers read from
+the requested camera's bounded buffer.
 
 ## Configuration example
 

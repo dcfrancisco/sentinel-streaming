@@ -1,6 +1,6 @@
 # ADR 0005: Capability-Driven ONVIF and PTZ Control
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-11
 
 ## Context

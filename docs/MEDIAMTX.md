@@ -49,3 +49,11 @@ source, register it with `POST /api/v1/sources/front-gate/playback/register`,
 and open `/admin`. Stop MediaMTX to verify normalized gateway failure, then
 restart it and repeat validation/registration; the current adapter does not
 run an automatic re-registration supervisor.
+## Packaging boundary
+
+SS-WP-014 does not download or silently install MediaMTX. The macOS bundle can
+include an operator-supplied reviewed binary, or MediaMTX can remain an
+external sibling service. Its version and license must be recorded by the
+deployment owner. Sentinel continues to use the provider-neutral `MediaGateway`
+and `MediaMtxAdapter` rather than exposing MediaMTX administration through its
+public contracts.

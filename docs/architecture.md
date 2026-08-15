@@ -33,6 +33,24 @@ setup, diagnostics, and operations. Sentinel Home, Sentinel Campus, and Sentinel
 Buildings remain separate domain applications and consume the stable API; they
 are not merged into this runtime or its console.
 
+The first commercial embedded topology is one Streaming edge instance per home
+or managed site. Domain products own tenancy and policy. See
+[Sentinel Platform Integration Boundary](platform-integration.md) and ADR 0007.
+
+## Current multi-source limitation and target
+
+The current runtime can register multiple sources but has one active decoded
+`FrameProvider`, one pipeline, one frame buffer, one preview, and one Vision
+state. Starting another decoded source switches that active processing path.
+Source-addressed frame APIs therefore do not yet constitute a concurrent
+multi-camera processing contract.
+
+ADR 0008 changes the architecture target: each active source receives its own
+ordered processing path, bounded canonical frame buffer, preview, capture
+context, optional Vision state, health, and resource accounting. Shared API,
+event, configuration, and MediaGateway services multiplex only through explicit
+camera-scoped contracts. SS-WP-015B will implement this target.
+
 ## Zero-friction onboarding boundary
 
 Camera onboarding is an orchestration workflow over existing source, ONVIF,
@@ -142,6 +160,10 @@ security decisions.
 - MJPEG metrics/stream access
 - graceful-shutdown sender
 
+The global frame buffer, preview, Vision state, and MJPEG state in the current
+`AppState` are migration constraints, not the target multi-camera model. Under
+ADR 0008 they move behind source-scoped runtime contexts.
+
 ## Module map
 
 | Module | Responsibility |
@@ -168,12 +190,16 @@ security decisions.
 ## Design invariants
 
 1. Camera implementations are owned by `VideoSourceManager`.
-2. Frames do not bypass `FrameProvider` and the pipeline.
-3. Higher-level consumers read from `FrameBuffer`, not cameras.
+2. Each active camera has one ordered `FrameProvider` and pipeline path.
+3. Higher-level consumers read from that camera's bounded `FrameBuffer`, not
+   cameras or global frame state.
 4. Memory used by frame and event stores is bounded by configuration.
 5. Vision unavailability must not prevent video runtime startup.
 6. Administration clients use the public API instead of duplicating business logic.
 7. Products interpret observations; the streaming service does not make alarms or policy decisions.
+8. Domain products never call camera protocols or MediaGateway internals.
+9. Streaming and domain products do not share mutable database tables.
+10. A source-addressed API never returns mutable state belonging to another source.
 
 ## Capability-driven ONVIF control
 

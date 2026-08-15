@@ -19,9 +19,10 @@ The logging layer supports environment-configurable filtering through the
 `tracing-subscriber` environment filter. JSON output is enabled by the current
 logging subscriber configuration.
 
-Correlation IDs are a planned hardening feature. They should eventually be
-attached to HTTP requests, pipeline work, source transitions, Vision requests,
-and generated events so one operation can be followed across subsystems.
+Support-bundle requests accept `X-Request-ID` and preserve request and
+correlation context in the bundle manifest. Existing consequential operations
+also record correlation IDs in operational event metadata. Full propagation to
+every pipeline and Vision operation remains later hardening work.
 
 ## Metrics
 
@@ -65,6 +66,20 @@ flowchart TD
 OpenTelemetry exporters and remote span propagation are planned. The current
 implementation provides structured logs and metrics but does not yet ship an
 OpenTelemetry SDK or exporter.
+
+## Support bundle
+
+`GET /api/v1/support/bundle` returns a bounded, sanitized diagnostic snapshot.
+The API does not write files or collect arbitrary host data. The CLI exporter
+creates the portable bundle layout and can include one operator-selected log
+file after redacting lines containing credential or authorization markers.
+
+The bundle contains instance/deployment identity, API/schema and build versions,
+runtime/security mode, effective sanitized configuration and hash, source
+summary, dependency health, recent operational events, and bounded health and
+metrics state. It intentionally excludes camera credentials, bearer tokens,
+bootstrap secrets, raw authorization headers, and MediaMTX administration
+secrets.
 
 ## Platform integration
 

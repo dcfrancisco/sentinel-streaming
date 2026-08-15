@@ -121,3 +121,21 @@ Host-level resource limits and service-manager integration remain
 production-hardening work; see the roadmap. Source retry uses configurable
 initial delay, maximum delay, and optional jitter from the runtime defaults.
 Configuration-file overrides are planned but not yet implemented.
+# Standalone operations
+
+On macOS, inspect the service with:
+
+```bash
+launchctl print "gui/$(id -u)/com.sentinel.streaming"
+tail -f "$HOME/Library/Logs/Sentinel Streaming/sentinel-streaming.log"
+tail -f "$HOME/Library/Logs/Sentinel Streaming/sentinel-streaming.error.log"
+```
+
+Run deployment diagnostics with:
+
+```bash
+sentinel-streaming doctor --config "$HOME/Library/Application Support/Sentinel Streaming/config/sentinel.yaml"
+```
+
+Log rotation is the responsibility of the host/deployment in this package.
+The full support bundle remains SS-WP-015.

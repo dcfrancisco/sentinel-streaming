@@ -1,18 +1,26 @@
 # Security boundaries
 
 SS-WP-009 adds a standalone bearer-token boundary without coupling the runtime
-to an enterprise identity provider. Configure `SENTINEL_VIEWER_TOKEN`,
+to an enterprise identity provider. The explicit `security.mode` setting
+controls the active boundary:
+
+- `OPEN_LOCAL_TEST` allows unauthenticated local validation and requires a
+  loopback bind. The Admin UI labels this development/test mode.
+- `LOCAL_ADMIN_AUTH` requires the configured bearer-token credentials and fails
+  closed when none are configured.
+- `EXTERNAL_IDENTITY` is reserved for the future ADR 0009 integration boundary
+  and is rejected until implemented.
+
+For `LOCAL_ADMIN_AUTH`, configure `SENTINEL_VIEWER_TOKEN`,
 `SENTINEL_OPERATOR_TOKEN`, `SENTINEL_ADMIN_TOKEN`, or the legacy-compatible
 `SENTINEL_API_TOKEN`. `SENTINEL_BOOTSTRAP_TOKEN` is an explicitly supplied,
 temporary administrator token for first run. Sentinel ships no default
 credential.
 
-Liveness, readiness, and version are public. If no token is configured, the
-service intentionally remains in an open local-development mode for the
-camera-free quick start; it must not be exposed to a shared or remote network.
-Once any token is configured, all other API operations require
-`Authorization: Bearer <token>`. `/admin` serves only a login shell without a
-token; source data and operations remain protected.
+Liveness, readiness, and version are public. In `OPEN_LOCAL_TEST`, all local
+Admin/API operations are available without a token. In `LOCAL_ADMIN_AUTH`, all
+other API operations require `Authorization: Bearer <token>` and missing
+credentials produce a configuration error rather than an open service.
 
 PTZ is consequential device control. All PTZ operations pass through the
 Sentinel API and the explicit `PtzAuthority` boundary; the admin page never
