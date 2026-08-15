@@ -22,6 +22,13 @@ async fn main() -> anyhow::Result<()> {
         Command::Status { endpoint } => cli::status(&endpoint).await?,
         Command::Stop { endpoint } => cli::request(reqwest::Method::POST, &endpoint, None).await?,
         Command::Version => println!("sentinel-streaming {}", env!("CARGO_PKG_VERSION")),
+        Command::CheckConfig { config } => check_config(&config)?,
+        Command::Doctor { config } => doctor(&config)?,
+        Command::SupportBundle {
+            endpoint,
+            output,
+            logs,
+        } => cli::support_bundle(&endpoint, &output, logs.as_deref()).await?,
         Command::Source { command } => source_command(command).await?,
         Command::Config {
             command: ConfigCommand::Show { endpoint },
@@ -55,6 +62,70 @@ async fn main() -> anyhow::Result<()> {
         Command::Profile { command } => cli::profile(command)?,
     }
     Ok(())
+}
+
+fn check_config(path: &std::path::Path) -> anyhow::Result<()> {
+    let config = Config::load(path, None, None)
+        .map_err(|error| anyhow::anyhow!("Configuration is invalid: {error}"))?;
+    println!("Configuration valid: {}", path.display());
+    println!("Bind address: {}", config.bind);
+    println!("Instance ID: {}", config.instance_id);
+    println!("Deployment profile: {}", config.deployment_profile);
+    println!(
+        "MediaGateway: {} ({})",
+        config.media_gateway.kind,
+        if config.media_gateway.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!("Sources: {}", config.sources.len());
+    Ok(())
+}
+
+fn doctor(path: &std::path::Path) -> anyhow::Result<()> {
+    let config = Config::load(path, None, None)
+        .map_err(|error| anyhow::anyhow!("Configuration is invalid: {error}"))?;
+    println!("Sentinel Streaming doctor");
+    println!("Version: {}", env!("CARGO_PKG_VERSION"));
+    println!("Configuration: PASS ({})", path.display());
+    println!("Security mode: {}", config.security.mode.as_str());
+    if config.security.mode.as_str() == "OPEN_LOCAL_TEST" {
+        println!("Warning: local test mode disables authentication and is loopback-only");
+    }
+    println!("MediaGateway type: {}", config.media_gateway.kind);
+    if config.media_gateway.enabled {
+        for (name, value) in [
+            ("MediaMTX API", config.media_gateway.api_url.as_deref()),
+            (
+                "WebRTC base",
+                config.media_gateway.webrtc_base_url.as_deref(),
+            ),
+            ("HLS base", config.media_gateway.hls_base_url.as_deref()),
+        ] {
+            println!(
+                "{name}: {}",
+                value
+                    .map(redact_diagnostic_url)
+                    .unwrap_or_else(|| "not configured".into())
+            );
+        }
+    } else {
+        println!("MediaGateway: disabled (basic installation does not require MediaMTX)");
+    }
+    println!("Admin URL: http://{}/admin", config.bind);
+    Ok(())
+}
+
+fn redact_diagnostic_url(value: &str) -> String {
+    url::Url::parse(value)
+        .map(|mut parsed| {
+            let _ = parsed.set_username("[REDACTED]");
+            let _ = parsed.set_password(Some("[REDACTED]"));
+            parsed.to_string()
+        })
+        .unwrap_or_else(|_| "[REDACTED_URL]".into())
 }
 
 async fn serve(
@@ -100,13 +171,19 @@ async fn serve(
         }
     }
     if started_source.is_none() {
-        return Err(anyhow::anyhow!("configuration has no enabled video source"));
+        tracing::info!("no enabled video sources configured; starting in camera-free setup mode");
     }
     let health_task = state.sources.spawn_health_monitor();
     let media_supervision_task = state.sources.spawn_media_supervisor();
     let mut pipeline_config = config.pipeline.clone();
     pipeline_config.buffer = config.buffer.enabled;
     state.runtime.mark_pipeline_initialized().await;
+    // Service readiness means the Sentinel API and control plane are available.
+    // Camera/media readiness remains source-scoped and is reported separately.
+    state
+        .health
+        .ready
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     tracing::info!("pipeline initialized");
     let vision_task = if config.vision.enabled {
         match OpenAiVisionProvider::from_env() {

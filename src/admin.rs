@@ -21,6 +21,7 @@ pub const INDEX: &str = r##"<!doctype html>
 <main>
   <h1>Sentinel Streaming Admin</h1>
   <p>RTSP source validation, stream health, and ONVIF capability inspection.</p>
+  <p id="security-mode" class="healthy">Security mode: loading…</p>
   <section id="auth-panel">
     <h2>Sign in</h2>
     <p>Use the administrator/operator/viewer token configured for this installation. First-run deployments may use the explicitly configured bootstrap token.</p>
@@ -45,6 +46,8 @@ window.fetch = (input, init = {}) => {
   return rawFetch(input, {...init, headers});
 };
 const authStatus = document.querySelector('#auth-status');
+const securityMode = document.querySelector('#security-mode');
+const authPanel = document.querySelector('#auth-panel');
 document.querySelector('#auth-token').value = authToken;
 document.querySelector('#auth-login').addEventListener('click', async () => {
   const candidate = document.querySelector('#auth-token').value;
@@ -357,6 +360,17 @@ async function load() {
   const response = await fetch('/api/v1/sources');
   render(await response.json());
 }
+async function loadSecurityMode() {
+  const response = await rawFetch('/api/v1/version');
+  if (!response.ok) return;
+  const version = await response.json();
+  securityMode.textContent = `Security mode: ${version.securityMode || 'UNKNOWN'}`;
+  if (version.securityMode === 'OPEN_LOCAL_TEST') {
+    securityMode.textContent += ' — development/test mode; authentication disabled';
+    authPanel.hidden = true;
+  }
+}
+loadSecurityMode().catch(() => { securityMode.textContent = 'Security mode: unavailable'; });
 load().catch(error => { cameras.textContent = `Unable to load sources: ${error.message}`; });
 </script>
 </body>

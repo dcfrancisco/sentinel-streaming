@@ -1,6 +1,6 @@
 # ADR 0006: Sentinel Streaming-Owned Admin and Setup Console
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-11
 
 ## Context
@@ -21,6 +21,12 @@ Manual RTSP configuration remains an Advanced path.
 The console consumes Sentinel APIs and normalized capability/playback models. It
 does not expose domain-specific homeowner, campus, or building workflows, and
 domain applications do not become dependencies of this repository.
+
+In an embedded deployment the console remains owned by Sentinel Streaming. It
+may be restricted to a management network, disabled by deployment policy, or
+launched from a domain product, but its setup and operational behavior remains
+implemented through the same public Sentinel Streaming API. Domain products do
+not duplicate ONVIF, RTSP, profile-selection, or MediaGateway logic.
 
 ## Consequences
 

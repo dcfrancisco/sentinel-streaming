@@ -23,4 +23,5 @@ pub mod rtsp;
 pub mod runtime;
 pub mod sources;
 pub mod stages;
+pub mod support;
 pub mod vision;

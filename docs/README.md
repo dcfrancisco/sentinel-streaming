@@ -8,6 +8,7 @@ complete homeowner, campus, or building security product.
 ## Documentation map
 
 - [Architecture](architecture.md) — runtime, module boundaries, data flow, and invariants.
+- [Platform integration boundary](platform-integration.md) — standalone/embedded topology, Sentinel Home ownership, and the pre-integration gate.
 - [Technical design](technical-design.md) — source adapters, frame capture, and runtime contracts.
 - [Administration API](api.md) — REST, MJPEG, SSE, authentication, and CLI behavior.
 - [RTSP validation](RTSP.md) — bounded protocol validation and normalized failures.
@@ -16,7 +17,7 @@ complete homeowner, campus, or building security product.
 - [Camera lifecycle](CAMERA_LIFECYCLE.md) — source and validation state semantics.
 - [Health and recovery](HEALTH_AND_RECOVERY.md) — source health fields and recovery boundary.
 - [Testing](testing.md) — automated, runtime, and SS-WP-003 validation checks.
-- [Work package status](WORK_PACKAGES.md) — SS-WP-003 scope and exclusions.
+- [Work package status](WORK_PACKAGES.md) — implemented packages, planned platform foundations, scope, and exclusions.
 - [Admin/setup console](admin-console.md) — zero-friction onboarding and infrastructure operations UX.
 - [Configuration](configuration.md) — YAML, environment, CLI precedence, and validation.
 - [Operations](operations.md) — deployment, camera permissions, startup, shutdown, and observability.

@@ -1,7 +1,7 @@
 use crate::{
     admin,
     auth::{Authenticator, Authority, BearerAuthenticator, Principal, PtzAuthority},
-    config::Config,
+    config::{Config, SecurityMode},
     events::{Event, EventBus, EventRecord},
     frame_buffer::FrameBuffer,
     health::Health,
@@ -208,6 +208,7 @@ pub fn router(shared: Arc<AppState>) -> Router {
             get(media_artifact_metadata).delete(delete_media_artifact),
         )
         .route("/api/v1/config", get(show_config))
+        .route("/api/v1/support/bundle", get(support_bundle))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/events/latest", get(latest_event))
         .route("/api/v1/events/:id", get(get_event))
@@ -273,11 +274,18 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let event_store = state.events.store();
     Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "health": state.health_monitor.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity(), "utilization": state.frame_buffer.utilization(), "evictions": state.frame_buffer.evictions()}, "events": {"length": event_store.len().await, "capacity": event_store.capacity()}}),
+        json!({"version": env!("CARGO_PKG_VERSION"), "securityMode": state.config.security.mode.as_str(), "authenticationConfigured": state.authenticator.configured(), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "health": state.health_monitor.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity(), "utilization": state.frame_buffer.utilization(), "evictions": state.frame_buffer.evictions()}, "events": {"length": event_store.len().await, "capacity": event_store.capacity()}}),
     )
 }
-async fn version() -> impl IntoResponse {
-    Json(json!({"name":"sentinel-streaming","version":env!("CARGO_PKG_VERSION")}))
+async fn version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(json!({
+        "name":"sentinel-streaming",
+        "version":env!("CARGO_PKG_VERSION"),
+        "apiVersion": "v1",
+        "instanceId": state.config.instance_id,
+        "deploymentProfile": state.config.deployment_profile,
+        "securityMode": state.config.security.mode.as_str()
+    }))
 }
 async fn stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     state.runtime.mark_shutting_down().await;
@@ -290,6 +298,7 @@ async fn whoami(
 ) -> impl IntoResponse {
     Json(json!({
         "authenticationConfigured": state.authenticator.configured(),
+        "securityMode": state.config.security.mode.as_str(),
         "principal": principal.map(|value| value.0),
     }))
 }
@@ -385,10 +394,7 @@ async fn require_auth(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> impl IntoResponse {
-    // Preserve the camera-free developer experience when no credentials are
-    // configured. Deployment documentation treats this as an explicit local
-    // development mode and requires tokens for shared/remote installations.
-    if !state.authenticator.configured() {
+    if state.config.security.mode == SecurityMode::OpenLocalTest {
         return next.run(request).await;
     }
     if matches!(
@@ -402,6 +408,24 @@ async fn require_auth(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
+    if !state.authenticator.configured() {
+        publish_security_event(
+            &state,
+            "AUTHENTICATION_NOT_CONFIGURED",
+            None,
+            "Authentication is required but no local administrator credentials are configured.",
+            None,
+            request
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok()),
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"code":"AUTHENTICATION_NOT_CONFIGURED","error":"Authentication is required but no credentials are configured."})),
+        )
+            .into_response();
+    }
     let Some(principal) = state.authenticator.authenticate(token) else {
         // The HTML shell contains no source data or controls. It is allowed to
         // load so the built-in console can present its login/bootstrap form;
@@ -503,6 +527,7 @@ fn required_authority(path: &str, method: &axum::http::Method) -> Option<Authori
     if path == "/metrics"
         || path == "/api/v1/status"
         || path == "/api/v1/config"
+        || path == "/api/v1/support/bundle"
         || path.starts_with("/api/v1/events")
         || path.starts_with("/api/v1/vision")
     {
@@ -1310,6 +1335,15 @@ async fn remove_source(
 }
 async fn show_config(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(json!(_state.config))
+}
+async fn support_bundle(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok());
+    Json(crate::support::snapshot(&state, request_id).await)
 }
 async fn list_events(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(state.events.store().recent(100).await)

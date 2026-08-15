@@ -1,7 +1,7 @@
 # Administration API and CLI
 
-The default server address is `0.0.0.0:8080`. A local development server can
-use `127.0.0.1:8081` when port 8080 is occupied.
+The default server address is `127.0.0.1:8080`. A shared/trusted deployment
+must explicitly choose `LOCAL_ADMIN_AUTH` before binding beyond loopback.
 
 ## Authentication
 
@@ -24,9 +24,9 @@ Authorization: Bearer <token>
 The CLI can store a token through its profile/auth workflow. Do not put tokens
 in shell history, source files, or committed configuration.
 
-With no token configured the service preserves an explicitly local,
-camera-free development mode for backwards-compatible quick starts. Do not
-bind that mode to a shared or remote network.
+`OPEN_LOCAL_TEST` is the explicit camera-free development mode. It requires a
+loopback bind and exposes the Admin/API surface without login. `LOCAL_ADMIN_AUTH`
+requires bearer credentials and fails closed when they are missing.
 
 `GET /api/v1/auth/whoami` returns the authenticated principal and role. Viewer
 accounts can read sources and playback; operators can validate, inspect
@@ -43,6 +43,7 @@ sources and onboarding. Authorization is enforced server-side.
 | GET | `/api/v1/version` | Service name and version |
 | POST | `/api/v1/stop` | Request graceful shutdown |
 | GET | `/api/v1/config` | Read-only effective configuration with secrets masked |
+| GET | `/api/v1/support/bundle` | Sanitized support-bundle snapshot for local export |
 | GET | `/api/v1/sources` | List registered sources |
 | GET | `/api/v1/sources/providers` | List camera provider capabilities |
 | GET | `/api/v1/sources/discover` | Discover local and configured cameras |
@@ -81,6 +82,13 @@ sources and onboarding. Authorization is enforced server-side.
 | GET | `/metrics` | Prometheus-compatible text metrics |
 
 Unsupported source adapters return `501 Not Implemented`.
+
+The current decoded processing runtime is single-active-source. Multiple source
+records can be registered and controlled, but frame, MJPEG, preview, and Vision
+state still use one active processing path and global frame state. Paths that
+contain `source_id` must not be interpreted as a concurrent multi-camera frame
+contract until SS-WP-015B implements ADR 0008. Protocol inspection, PTZ,
+MediaGateway registration, and source metadata remain source-addressed.
 
 `/api/v1/sources/discover` includes existing sources, a hardware-free synthetic
 camera, and ONVIF WS-Discovery results when cameras respond on the local network.
@@ -146,6 +154,7 @@ sentinel-streaming version
 sentinel-streaming endurance [--duration <N>s|<N>m|<N>h] [--source synthetic] [--viewers <N>] [--vision mock]
 sentinel-streaming source list|add|remove|start|stop|restart
 sentinel-streaming config show
+sentinel-streaming support-bundle --output ./support-bundle [--logs <path>]
 sentinel-streaming metrics
 sentinel-streaming auth login|logout|status|whoami
 sentinel-streaming profile list|use|add

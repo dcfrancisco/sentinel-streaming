@@ -1,5 +1,11 @@
 # Deployment
 
+For the supported macOS standalone installation, follow
+[INSTALLATION.md](INSTALLATION.md) and [STANDALONE_DEPLOYMENT.md](STANDALONE_DEPLOYMENT.md).
+The packaged service uses a user-local LaunchAgent, requires no Docker or
+external database, and keeps binaries separate from configuration, state,
+artifacts, and logs.
+
 Sentinel Streaming remains usable without MediaMTX. In that mode RTSP
 validation, ONVIF discovery, PTZ, health, and operational APIs continue to work;
 browser playback reports `MEDIA_GATEWAY_UNAVAILABLE`.
@@ -24,6 +30,15 @@ Sentinel supports pluggable persistence. SQLite is an optional embedded backend
 for standalone deployments; it is not a mandatory dependency of this runtime.
 
 ## Authentication and TLS
+
+For human testing, the packaged configuration uses `OPEN_LOCAL_TEST`, which is
+loopback-only and intentionally unauthenticated. This mode is not production
+safe. For authenticated operation, set:
+
+```yaml
+security:
+  mode: LOCAL_ADMIN_AUTH
+```
 
 Set `SENTINEL_ADMIN_TOKEN` for a standalone administrator and optionally set
 `SENTINEL_OPERATOR_TOKEN` and `SENTINEL_VIEWER_TOKEN` for least-privilege

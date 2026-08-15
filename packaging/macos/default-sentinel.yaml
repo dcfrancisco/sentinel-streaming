@@ -1,0 +1,15 @@
+bind: 127.0.0.1:8081
+instance_id: local-instance
+deployment_profile: standalone
+security:
+  mode: OPEN_LOCAL_TEST
+fps: 30
+# Camera-free by default: installation and /admin readiness do not require a
+# physical camera. Add and validate a source through the setup workflow.
+sources: []
+media_gateway:
+  enabled: false
+  kind: mediamtx
+  timeout_ms: 3000
+logging:
+  level: info

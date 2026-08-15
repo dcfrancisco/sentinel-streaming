@@ -32,6 +32,22 @@ pub enum Command {
         endpoint: String,
     },
     Version,
+    CheckConfig {
+        #[arg(long, default_value = "sentinel.yaml")]
+        config: std::path::PathBuf,
+    },
+    Doctor {
+        #[arg(long, default_value = "sentinel.yaml")]
+        config: std::path::PathBuf,
+    },
+    SupportBundle {
+        #[arg(long, default_value = "http://127.0.0.1:8080/api/v1/support/bundle")]
+        endpoint: String,
+        #[arg(long, default_value = "support-bundle")]
+        output: std::path::PathBuf,
+        #[arg(long)]
+        logs: Option<std::path::PathBuf>,
+    },
     Source {
         #[command(subcommand)]
         command: SourceCommand,
@@ -168,6 +184,111 @@ pub async fn request(
 }
 pub async fn status(endpoint: &str) -> anyhow::Result<()> {
     request(reqwest::Method::GET, endpoint, None).await
+}
+
+pub async fn support_bundle(
+    endpoint: &str,
+    output: &std::path::Path,
+    logs: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    if output.exists() {
+        return Err(anyhow::anyhow!(
+            "support-bundle output already exists: {}",
+            output.display()
+        ));
+    }
+    let client = reqwest::Client::new();
+    let mut request = client.get(endpoint);
+    if let Ok((_, _, token)) = crate::auth::current() {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(anyhow::anyhow!(
+            "support bundle request failed ({status}): {body}"
+        ));
+    }
+    let snapshot: serde_json::Value = serde_json::from_str(&body)?;
+    write_support_bundle(output, &snapshot, logs)?;
+    println!("Support bundle written to {}", output.display());
+    Ok(())
+}
+
+fn write_support_bundle(
+    output: &std::path::Path,
+    snapshot: &serde_json::Value,
+    logs: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(output.join("logs"))?;
+    write_json(output.join("manifest.json"), &snapshot["manifest"])?;
+    write_json(output.join("version.json"), &snapshot["version"])?;
+    write_json(output.join("health.json"), &snapshot["health"])?;
+    write_json(
+        output.join("source-summary.json"),
+        &snapshot["sourceSummary"],
+    )?;
+    write_json(
+        output.join("dependency-health.json"),
+        &snapshot["dependencyHealth"],
+    )?;
+
+    let config = serde_yaml::to_string(&snapshot["sanitizedConfig"])?;
+    std::fs::write(output.join("sanitized-config.yaml"), config)?;
+
+    let mut events = String::new();
+    if let Some(values) = snapshot["recentOperationalEvents"].as_array() {
+        for value in values {
+            events.push_str(&serde_json::to_string(value)?);
+            events.push('\n');
+        }
+    }
+    std::fs::write(output.join("recent-operational-events.jsonl"), events)?;
+
+    if let Some(log_path) = logs {
+        if !log_path.is_file() {
+            return Err(anyhow::anyhow!(
+                "log path is not a file: {}",
+                log_path.display()
+            ));
+        }
+        let name = log_path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("log path has no file name"))?;
+        let content = std::fs::read_to_string(log_path)?;
+        let sanitized = content
+            .lines()
+            .map(sanitize_log_line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(output.join("logs").join(name), format!("{sanitized}\n"))?;
+    }
+    Ok(())
+}
+
+fn write_json(path: std::path::PathBuf, value: &serde_json::Value) -> anyhow::Result<()> {
+    std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    Ok(())
+}
+
+fn sanitize_log_line(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    if [
+        "authorization:",
+        "bearer ",
+        "password",
+        "secret",
+        "bootstrap_token",
+        "api_token",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+    {
+        "[REDACTED_LOG_LINE]".into()
+    } else {
+        line.into()
+    }
 }
 pub fn server_base() -> String {
     crate::auth::current()
