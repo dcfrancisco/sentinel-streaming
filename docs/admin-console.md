@@ -17,6 +17,9 @@ support bundle download, and runtime-only OpenAI vision settings. Camera
 registration and vision changes made through this interface are not persisted.
 Some capabilities described below remain targets rather than completed
 features; consult [the implementation inventory](reviews/streaming-admin-inventory.md).
+The responsive embedded console uses a dark, card-based operations layout;
+camera inventory and empty states are rendered from live API data rather than
+mock camera records.
 
 Vision reads `OPENAI_API_KEY` only from the service environment; the console
 shows only whether a nonempty key is present. `OPENAI_VISION_MODEL` defaults to

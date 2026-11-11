@@ -1545,6 +1545,13 @@ mod security_tests {
             "nosniff"
         );
         assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("class=\"topbar\""));
+        assert!(html.contains("id=\"camera-layout\""));
+        assert!(html.contains("No cameras registered"));
     }
 
     #[test]
