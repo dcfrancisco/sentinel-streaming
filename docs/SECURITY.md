@@ -6,7 +6,7 @@ controls the active boundary:
 
 - `OPEN_LOCAL_TEST` allows unauthenticated local validation and requires a
   loopback bind. The Admin UI labels this development/test mode.
-- `LOCAL_ADMIN_AUTH` requires the configured bearer-token credentials and fails
+- `LOCAL_ADMIN_AUTH` is the default, requires configured bearer-token credentials, and fails
   closed when none are configured.
 - `EXTERNAL_IDENTITY` is reserved for the future ADR 0009 integration boundary
   and is rejected until implemented.

@@ -1,7 +1,8 @@
 # Configuration Guide
 
-Sentinel Streaming loads one immutable effective configuration at startup. No
-database is used and hot reload is not supported.
+Sentinel Streaming loads its effective configuration at startup. Vision
+settings can also be changed for the running process, without changing the
+startup configuration. No database is used and file hot reload is not supported.
 
 ## Precedence
 
@@ -28,6 +29,9 @@ deployment_profile: embedded-edge
 
 security:
   mode: LOCAL_ADMIN_AUTH
+
+pipeline:
+  vision: true
 
 vision:
   provider: openai
@@ -75,12 +79,19 @@ SENTINEL_VISION_INTERVAL=10s
 SENTINEL_BUFFER_CAPACITY=600
 ```
 
-Operational variables remain supported: `OPENAI_API_KEY`, `SENTINEL_API_TOKEN`,
+Operational variables remain supported: `OPENAI_API_KEY`, `OPENAI_VISION_MODEL`,
+`SENTINEL_API_TOKEN`,
 `SENTINEL_CAMERA_INDEX`, and `SENTINEL_FFMPEG`. RTSP passwords must use
 `username_env` and `password_env` references rather than clear text.
 
+The default image-capable vision model is `gpt-5.4-mini`. Both
+`pipeline.vision` and `vision.enabled` must be true at startup, and buffering
+must be enabled. The authenticated Admin Console can override vision settings
+for the current process only; they are not saved and revert on restart.
+
 `SENTINEL_SECURITY_MODE` overrides the file value with `OPEN_LOCAL_TEST`,
 `LOCAL_ADMIN_AUTH`, or `EXTERNAL_IDENTITY`. `OPEN_LOCAL_TEST` is loopback-only;
+`LOCAL_ADMIN_AUTH` is the default and requires configured bearer credentials.
 `EXTERNAL_IDENTITY` is reserved for the future identity integration boundary.
 
 ## CLI overrides

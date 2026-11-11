@@ -1,5 +1,37 @@
 # Sentinel Streaming Admin and Setup Console
 
+## Current implementation and operation
+
+Start the service and open `http://127.0.0.1:8080/admin`. In
+`LOCAL_ADMIN_AUTH` mode configure `SENTINEL_ADMIN_TOKEN` in the service
+environment and sign in with that administrator token. Do not share it. The
+default is `LOCAL_ADMIN_AUTH`. The opt-in `OPEN_LOCAL_TEST` mode bypasses
+authentication and is restricted by configuration validation to loopback; use
+it only in a trusted local test environment. Bearer tokens are held in browser session storage until the tab
+session ends; there is no server-side session or cookie.
+
+The current console provides a status overview, ONVIF onboarding, a manual
+source registration form, source start/stop/removal, current-frame retrieval,
+RTSP playback and capability-dependent PTZ, recent events, component health,
+support bundle download, and runtime-only OpenAI vision settings. Camera
+registration and vision changes made through this interface are not persisted.
+Some capabilities described below remain targets rather than completed
+features; consult [the implementation inventory](reviews/streaming-admin-inventory.md).
+
+Vision reads `OPENAI_API_KEY` only from the service environment; the console
+shows only whether a nonempty key is present. `OPENAI_VISION_MODEL` defaults to
+`gpt-5.4-mini`. Set both `pipeline.vision` and `vision.enabled` for startup
+vision, or enable it for this process in the console. Stopping vision cancels
+in-flight work; changes revert on restart. A failed provider does not stop
+capture. Refresh the overview to see the latest observation and errors.
+
+Source and vision mutations are authorized on the server. Browser mutations
+with an `Origin` must be same-origin, and cross-origin access is not enabled by
+default. Existing external browser clients need a same-origin gateway or an
+explicitly designed and secured deployment policy. Token-bearing plain HTTP
+should be used only on loopback; secure remote access requires TLS and a
+trusted deployment boundary.
+
 Sentinel Streaming owns a first-party web interface for infrastructure setup
 and operations. This console is separate from Sentinel Home, Sentinel Campus,
 and Sentinel Buildings. It must not become another homeowner, campus, or

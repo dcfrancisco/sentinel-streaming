@@ -143,6 +143,17 @@ Vision produces scene observations. The Event Engine stores those observations
 and source lifecycle events. Consumers receive facts; they do not receive
 security decisions.
 
+The background vision worker is isolated from frame capture. Its effective
+startup state requires both pipeline and vision switches. The administrator
+can replace its runtime-only settings; a serialized controller stops the prior
+worker before starting another, and disabling cancels in-flight work. The
+startup configuration remains unchanged and is restored on restart. Provider
+failure is reported separately from service readiness and does not halt the
+processing pipeline. Because frames have no source identifier, vision events
+do not assert source provenance; temporal samples can include frames from
+before a source switch. Source-scoped frame buffers are needed to remove this
+limitation.
+
 ## Central application state
 
 `AppState` shares the operational components required by API handlers:
