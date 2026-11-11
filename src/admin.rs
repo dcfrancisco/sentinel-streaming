@@ -7,6 +7,7 @@ pub const INDEX: &str = r##"<!doctype html>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #080d15; color: #e8edf5; font-synthesis: none; }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { min-height: 100vh; margin: 0; background: radial-gradient(ellipse at 50% -35%, #202b3c 0, #0d1420 46%, #080d15 100%); }
     .topbar { display: flex; align-items: center; gap: 1rem; min-height: 70px; padding: .8rem max(24px, calc((100vw - 1200px) / 2)); border-bottom: 1px solid #263244; background: rgba(11, 17, 27, .88); }
     .brand { display: flex; align-items: center; gap: .8rem; font-size: 1.35rem; font-weight: 700; letter-spacing: -.025em; }
@@ -445,7 +446,9 @@ function render(sources) {
       card.append(action);
     }
     const preview = document.createElement('button');
-    preview.textContent = 'Start live preview';
+    const sourceRunning = String(source.status || '').toLowerCase() === 'running';
+    preview.textContent = sourceRunning ? 'Start live preview' : 'Start source to preview';
+    preview.disabled = !sourceRunning;
     const image = document.createElement('img');
     image.alt = `Current frame from ${source.name || source.id}`;
     image.hidden = true;
