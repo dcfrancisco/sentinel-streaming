@@ -119,6 +119,7 @@ pub struct PtzOperationResult {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OnvifFailureCode {
     DiscoveryTimeout,
+    PermissionDenied,
     AuthenticationFailed,
     MalformedSoap,
     DeviceUnreachable,
@@ -330,7 +331,11 @@ impl OnvifBackend for HttpOnvifBackend {
         })?;
         let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|error| {
             failure(
-                OnvifFailureCode::DeviceUnreachable,
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    OnvifFailureCode::PermissionDenied
+                } else {
+                    OnvifFailureCode::DeviceUnreachable
+                },
                 "ONVIF discovery could not open a network socket.",
                 Some(error.to_string()),
             )
@@ -340,7 +345,11 @@ impl OnvifBackend for HttpOnvifBackend {
             .await
             .map_err(|error| {
                 failure(
-                    OnvifFailureCode::DeviceUnreachable,
+                    if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        OnvifFailureCode::PermissionDenied
+                    } else {
+                        OnvifFailureCode::DeviceUnreachable
+                    },
                     "ONVIF discovery request could not be sent.",
                     Some(error.to_string()),
                 )
@@ -354,8 +363,20 @@ impl OnvifBackend for HttpOnvifBackend {
                 break;
             }
             let received = timeout(remaining, socket.recv_from(&mut buffer)).await;
-            let Ok(Ok((length, _address))) = received else {
-                break;
+            let (length, _address) = match received {
+                Ok(Ok(received)) => received,
+                Ok(Err(error)) => {
+                    return Err(failure(
+                        if error.kind() == std::io::ErrorKind::PermissionDenied {
+                            OnvifFailureCode::PermissionDenied
+                        } else {
+                            OnvifFailureCode::DeviceUnreachable
+                        },
+                        "ONVIF discovery could not receive network responses.",
+                        Some(error.to_string()),
+                    ));
+                }
+                Err(_) => break,
             };
             let xml = std::str::from_utf8(&buffer[..length]).map_err(|error| {
                 failure(
@@ -1295,6 +1316,7 @@ mod tests {
     async fn emulator_failure_categories_are_stable() {
         for code in [
             OnvifFailureCode::DiscoveryTimeout,
+            OnvifFailureCode::PermissionDenied,
             OnvifFailureCode::AuthenticationFailed,
             OnvifFailureCode::MalformedSoap,
         ] {

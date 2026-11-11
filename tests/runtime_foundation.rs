@@ -180,3 +180,129 @@ async fn manager_starts_synthetic_source_without_hardware() {
     manager.stop("synthetic").await.unwrap();
     shutdown.send(true).unwrap();
 }
+
+#[tokio::test]
+async fn concurrent_start_and_inactive_stop_preserve_active_source() {
+    let events = sentinel_streaming::events::EventBus::new(8);
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    let recovery = sentinel_streaming::recovery::RecoveryEngine::new(events.clone());
+    let manager = VideoSourceManager::new(
+        10,
+        events,
+        Config::default().recovery.camera,
+        receiver,
+        recovery,
+    );
+    for id in ["one", "two"] {
+        manager
+            .add(AddSource {
+                id: id.into(),
+                kind: "synthetic".into(),
+                options: SourceOptions {
+                    width: Some(16),
+                    height: Some(12),
+                    fps: Some(10),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+    }
+    let (first, second) = tokio::join!(manager.start("one"), manager.start("one"));
+    assert_eq!(first.unwrap().connections, 1);
+    assert_eq!(second.unwrap().connections, 1);
+    assert_eq!(manager.get("one").await.unwrap().connections, 1);
+    manager.stop("two").await.unwrap();
+    let mut provider = manager.clone();
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sentinel_streaming::sources::FrameProvider::next_frame(&mut provider),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!((frame.width, frame.height), (16, 12));
+    assert!(matches!(
+        manager.get("one").await.unwrap().status,
+        sentinel_streaming::sources::SourceState::Running
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(2), manager.start("two"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        manager.get("one").await.unwrap().status,
+        sentinel_streaming::sources::SourceState::Stopped
+    ));
+    manager.stop("one").await.unwrap();
+    assert!(matches!(
+        manager.get("two").await.unwrap().status,
+        sentinel_streaming::sources::SourceState::Running
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sentinel_streaming::sources::FrameProvider::next_frame(&mut provider),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    manager.stop("two").await.unwrap();
+    shutdown.send(true).unwrap();
+}
+
+#[tokio::test]
+async fn synthetic_service_stops_cleanly_through_api() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let config = std::env::temp_dir().join(format!(
+        "sentinel-missing-config-{}-{}.yaml",
+        std::process::id(),
+        address.port()
+    ));
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_sentinel-streaming"))
+        .args([
+            "serve",
+            "--bind",
+            &address.to_string(),
+            "--source",
+            "synthetic",
+            "--config",
+        ])
+        .arg(config)
+        .env("SENTINEL_SECURITY_MODE", "OPEN_LOCAL_TEST")
+        .env_remove("OPENAI_API_KEY")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let client = reqwest::Client::new();
+    let base = format!("http://{address}");
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if client
+                .get(format!("{base}/health/ready"))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(ready.is_ok(), "synthetic server did not become ready");
+    let response = client
+        .post(format!("{base}/api/v1/stop"))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.success(), "synthetic service did not stop cleanly");
+}

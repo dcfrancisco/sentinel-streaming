@@ -355,7 +355,9 @@ async fn health_checks_are_bounded_concurrently() {
 #[tokio::test]
 async fn api_exposes_validation_and_admin_page() {
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    let state = AppState::new(Config::default(), FrameBuffer::new(4), shutdown, receiver);
+    let mut config = Config::default();
+    config.security.mode = sentinel_streaming::config::SecurityMode::OpenLocalTest;
+    let state = AppState::new(config, FrameBuffer::new(4), shutdown, receiver);
     state
         .sources
         .add(AddSource {

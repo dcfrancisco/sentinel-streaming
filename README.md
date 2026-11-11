@@ -96,7 +96,7 @@ continues operating with Vision disabled.
 Run a complete camera-free instance:
 
 ```bash
-cargo run -- serve --bind 127.0.0.1:8081 --source synthetic
+SENTINEL_SECURITY_MODE=OPEN_LOCAL_TEST cargo run -- serve --bind 127.0.0.1:8081 --source synthetic
 ```
 
 Open the live stream at:
@@ -120,14 +120,16 @@ schema and precedence rules.
 
 ## Administration
 
-The administration surface is an infrastructure setup and operations console,
-not a homeowner, campus, or building surveillance product. Its planned guided
-camera flow is: discover camera, select device, provide credentials, discover
-capabilities, verify connectivity and playback, preview video, name the camera,
-and save. Manual RTSP configuration remains available under an Advanced path.
+Open `http://127.0.0.1:8080/admin` for the camera-first administration console.
+Use **Cameras** to see registered sources and actual frame previews, and
+**Add camera** to discover ONVIF devices or register RTSP manually. In
+authenticated mode, sign in with the configured administrator token. The
+console also provides Overview, AI Vision, and read-only Settings views.
+Simultaneous independent camera streams and durable camera edits are not yet
+supported; see the documented limits in the admin-console guide.
 
-See [docs/admin-console.md](docs/admin-console.md) for the target console
-experience.
+See [docs/admin-console.md](docs/admin-console.md) for setup, security and
+current limitations.
 
 Protected deployments use bearer roles configured with environment tokens;
 see [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) and
@@ -157,8 +159,10 @@ Physical-camera interoperability is certified separately from emulator and
 local MediaMTX evidence. See [docs/certification/README.md](docs/certification/README.md)
 for the matrix schema, repeatable procedure, and sanitized capture harness.
 
-Run the daemon with `cargo run -- serve`. The development default listens on
-loopback at `127.0.0.1:8080` in `OPEN_LOCAL_TEST` mode and exposes:
+Run the daemon with `cargo run -- serve`. The default listens on loopback at
+`127.0.0.1:8080` in `LOCAL_ADMIN_AUTH` mode; configure
+`SENTINEL_ADMIN_TOKEN` before using administrative endpoints. Explicitly
+select `OPEN_LOCAL_TEST` only for trusted local development. The service exposes:
 
 - `GET /health/live`
 - `GET /health/ready`
@@ -182,6 +186,7 @@ loopback at `127.0.0.1:8080` in `OPEN_LOCAL_TEST` mode and exposes:
 - `GET /api/v1/preview` (latest JPEG frame)
 - `GET /api/v1/streams/{source_id}/frame` (bounded JPEG capture for analysis)
 - `GET /api/v1/vision/latest`
+- `GET/PUT /api/v1/vision/config` (runtime-only configuration)
 - `GET /api/v1/streams/{source_id}/mjpeg`
 
 With `security.mode: OPEN_LOCAL_TEST`, the local Admin/API surface is available
@@ -210,18 +215,27 @@ The `VideoSourceManager` owns live source implementations. The pipeline consumes
 
 The manager now owns source lifecycle and runtime metadata for built-in, synthetic,
 video-file, image-sequence, and RTSP sources. Start a camera-free server with
-`cargo run -- serve --source synthetic`, or register a source through
+`SENTINEL_SECURITY_MODE=OPEN_LOCAL_TEST cargo run -- serve --source synthetic`,
+or register a source through
 `POST /api/v1/sources` using `kind: synthetic`, `kind: video-file`,
 `kind: image-sequence`, or `kind: rtsp`. All source types use the same frame provider, pipeline, frame
 buffer, MJPEG, metrics, and health paths. RTSP requires an FFmpeg executable;
 set `SENTINEL_FFMPEG` when it is not available on `PATH`.
 
-Vision is an optional background consumer of the `FrameBuffer`. When
-`OPENAI_API_KEY` is available, it analyzes buffered frames every five seconds
-through the OpenAI Responses API and stores the latest structured scene
-observation at `/api/v1/vision/latest`. Without the key, vision is disabled and
-streaming continues normally. Enabling vision sends camera frames to OpenAI and
-may incur API usage costs.
+Vision is an optional background consumer of the `FrameBuffer`. At startup it
+requires both `pipeline.vision: true` and `vision.enabled: true`, an enabled
+buffer, and `OPENAI_API_KEY`. The model defaults to the image-capable
+`gpt-5.4-mini` and can be overridden with `OPENAI_VISION_MODEL`. The OpenAI
+Responses API returns structured observations at `/api/v1/vision/latest`.
+Missing credentials or provider failures do not stop streaming. Enabling
+vision sends camera frames to OpenAI and may incur API usage costs.
+
+Administrators can change vision settings for the running process from the
+console; these changes are not persisted and revert to startup configuration on
+restart. Set the environment key outside the console. Vision retries transient
+failures at most twice per observation, honors `Retry-After`, and stops the
+worker on permanent authentication/configuration HTTP errors. Diagnostics are
+available in `/api/v1/status` and `/metrics`.
 
 Vision now performs temporal observation by selecting five frames spaced two seconds apart by default. Observations include summaries, changes, activities, and objects; selection and spacing are configurable through `vision.frames` and `vision.spacing_seconds`.
 
@@ -262,7 +276,7 @@ On macOS, grant Camera permission to Terminal or the IDE running the service.
 If port `8080` is occupied, use another port such as `8081`:
 
 ```bash
-SENTINEL_API_TOKEN=dev-token \
+SENTINEL_SECURITY_MODE=OPEN_LOCAL_TEST \
 SENTINEL_CAMERA_INDEX=0 \
 cargo run -- serve --bind 127.0.0.1:8081
 ```
@@ -293,6 +307,40 @@ curl -N -H "Authorization: Bearer dev-token" \
 
 To enable optional OpenAI vision, provide `OPENAI_API_KEY` when starting the
 service. Do not commit API keys or paste them into logs or shell transcripts.
+For example, configure the process environment securely, and add this to its
+configuration file:
+
+```yaml
+pipeline:
+  vision: true
+vision:
+  enabled: true
+  interval: 5s
+  frames: 5
+  spacing: 2s
+```
+
+Set `OPENAI_VISION_MODEL` only if a different image-capable model is needed.
+After rotating any previously exposed key, restart the service with the new key.
+
+### Real-camera vision smoke test
+
+This procedure requires a supported physical camera, camera permission, an
+image-capable model deployment and network access to OpenAI; it may incur
+charges. It has not been verified by this change.
+
+1. Enable the two vision settings above, supply `OPENAI_API_KEY` and configure
+   an administrator token in the service environment. Start
+   `./target/release/sentinel-streaming serve`.
+2. Open `http://127.0.0.1:8080/admin` and authenticate in `LOCAL_ADMIN_AUTH`
+   mode. Confirm the camera is running and load a current frame.
+3. Move within view and refresh the dashboard. Verify the latest vision
+   observation contains a summary, changes, activities and objects.
+4. Disable vision using the console; refresh and verify vision is disabled and
+   request counts stop increasing. Confirm camera frames still update.
+5. In a separate non-production run, use an invalid or absent key and verify the
+   failure is visible in diagnostics while preview continues. Never copy a key
+   or image payload into test notes.
 
 Stop a running release server gracefully from another terminal:
 

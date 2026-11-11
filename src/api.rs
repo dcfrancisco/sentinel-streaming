@@ -17,7 +17,7 @@ use crate::{
     sources::{
         AddSource, ConnectionTestRequest, PtzAuditContext, SourceManagerError, VideoSourceManager,
     },
-    vision::{VisionMetrics, VisionState},
+    vision::{VisionControl, VisionMetrics, VisionSettings, VisionState},
 };
 use axum::{
     body::Body,
@@ -50,6 +50,7 @@ pub struct AppState {
     pub runtime: RuntimeStatus,
     pub frame_buffer: FrameBuffer,
     pub vision: VisionState,
+    pub vision_control: Arc<VisionControl>,
     pub vision_metrics: VisionMetrics,
     pub mjpeg: MjpegStream,
     pub shutdown: tokio::sync::watch::Sender<bool>,
@@ -118,6 +119,7 @@ impl AppState {
             runtime: RuntimeStatus::default(),
             frame_buffer,
             vision: VisionState::default(),
+            vision_control: Arc::new(VisionControl::new(&config)),
             vision_metrics: VisionMetrics::default(),
             mjpeg,
             shutdown,
@@ -216,12 +218,16 @@ pub fn router(shared: Arc<AppState>) -> Router {
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/preview", get(preview))
         .route("/api/v1/vision/latest", get(vision_latest))
+        .route(
+            "/api/v1/vision/config",
+            get(vision_config).put(update_vision_config),
+        )
         .route("/api/v1/streams/:source_id/mjpeg", get(mjpeg))
         .route("/api/v1/streams/:source_id/frame", get(frame))
         .route("/admin", get(admin_page))
         .route("/admin/", get(admin_page))
         .layer(middleware::from_fn_with_state(shared.clone(), require_auth))
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::new())
         .with_state(shared)
 }
 async fn live() -> impl IntoResponse {
@@ -273,8 +279,19 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let event_store = state.events.store();
+    let (vision, vision_running) = state.vision_control.snapshot().await;
     Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "securityMode": state.config.security.mode.as_str(), "authenticationConfigured": state.authenticator.configured(), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "health": state.health_monitor.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity(), "utilization": state.frame_buffer.utilization(), "evictions": state.frame_buffer.evictions()}, "events": {"length": event_store.len().await, "capacity": event_store.capacity()}}),
+        json!({"version": env!("CARGO_PKG_VERSION"), "securityMode": state.config.security.mode.as_str(), "authenticationConfigured": state.authenticator.configured(), "metrics": state.metrics.snapshot(), "runtime": state.runtime.snapshot().await, "health": state.health_monitor.snapshot().await, "buffer": {"length": state.frame_buffer.len(), "capacity": state.frame_buffer.capacity(), "utilization": state.frame_buffer.utilization(), "evictions": state.frame_buffer.evictions()}, "events": {"length": event_store.len().await, "capacity": event_store.capacity()},
+        "vision": {
+            "enabled": vision.enabled,
+            "running": vision_running,
+            "credentialConfigured": std::env::var("OPENAI_API_KEY").is_ok_and(|key| !key.trim().is_empty()),
+            "model": vision.model,
+            "intervalSeconds": vision.interval_seconds,
+            "frames": vision.frames,
+            "spacingSeconds": vision.spacing_seconds,
+            "metrics": state.vision_metrics.snapshot()
+        }}),
     )
 }
 async fn version(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -312,6 +329,22 @@ async fn vision_latest(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     match state.vision.latest().await {
         Some(analysis) => (StatusCode::OK, Json(json!(analysis))).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+async fn vision_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let (settings, running) = state.vision_control.snapshot().await;
+    Json(json!({"settings": settings, "running": running, "persistent": false}))
+}
+async fn update_vision_config(
+    State(state): State<Arc<AppState>>,
+    Json(settings): Json<VisionSettings>,
+) -> impl IntoResponse {
+    match state.vision_control.apply(settings, &state).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({"status":"applied","persistent":false})),
+        ),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({"error":error}))),
     }
 }
 async fn mjpeg(
@@ -368,14 +401,7 @@ async fn frame(
     }
     match state.frame_buffer.latest() {
         Some(frame) => match frame.jpeg(82) {
-            Ok(bytes) => (
-                [
-                    (header::CONTENT_TYPE, "image/jpeg"),
-                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-                ],
-                bytes,
-            )
-                .into_response(),
+            Ok(bytes) => ([(header::CONTENT_TYPE, "image/jpeg")], bytes).into_response(),
             Err(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": error.to_string()})),
@@ -394,6 +420,25 @@ async fn require_auth(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> impl IntoResponse {
+    if state.config.security.mode == SecurityMode::OpenLocalTest && !local_test_host(&request) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                json!({"code":"INVALID_HOST","error":"Local test mode requires a loopback host."}),
+            ),
+        )
+            .into_response();
+    }
+    if !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    ) && !same_origin_or_non_browser(&request)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"code":"CROSS_ORIGIN_DENIED","error":"Cross-origin mutations are not allowed."})),
+        ).into_response();
+    }
     if state.config.security.mode == SecurityMode::OpenLocalTest {
         return next.run(request).await;
     }
@@ -468,19 +513,74 @@ async fn require_auth(
             ).into_response();
         }
     }
-    publish_security_event(
-        &state,
-        "AUTHENTICATION_SUCCEEDED",
-        None,
-        "Authentication succeeded",
-        Some(&principal),
-        request
-            .headers()
-            .get("x-request-id")
-            .and_then(|v| v.to_str().ok()),
-    );
+    if request.uri().path() == "/api/v1/auth/whoami"
+        || !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+        )
+    {
+        publish_security_event(
+            &state,
+            "AUTHENTICATION_SUCCEEDED",
+            None,
+            "Authentication succeeded",
+            Some(&principal),
+            request
+                .headers()
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok()),
+        );
+    }
     request.extensions_mut().insert(principal);
     next.run(request).await
+}
+
+fn local_test_host(request: &Request<Body>) -> bool {
+    let Some(value) = request.headers().get(header::HOST) else {
+        return true;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let Ok(url) = url::Url::parse(&format!("http://{value}")) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(host)) => host.is_loopback(),
+        Some(url::Host::Ipv6(host)) => host.is_loopback(),
+        None => false,
+    }
+}
+
+fn same_origin_or_non_browser(request: &Request<Body>) -> bool {
+    let Some(origin) = request.headers().get(header::ORIGIN) else {
+        return true;
+    };
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(origin) else {
+        return false;
+    };
+    if !matches!(origin.scheme(), "http" | "https")
+        || origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+    {
+        return false;
+    }
+    let Some(host) = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+    else {
+        return false;
+    };
+    url::Url::parse(&format!("{}://{host}", origin.scheme()))
+        .is_ok_and(|host| host.origin() == origin.origin())
 }
 
 fn source_id_from_path(path: &str) -> Option<String> {
@@ -523,6 +623,9 @@ fn publish_security_event(
 fn required_authority(path: &str, method: &axum::http::Method) -> Option<Authority> {
     if path == "/admin" || path == "/admin/" {
         return Some(Authority::ViewSource);
+    }
+    if path == "/api/v1/vision/config" && method != axum::http::Method::GET {
+        return Some(Authority::AdministerSystem);
     }
     if path == "/metrics"
         || path == "/api/v1/status"
@@ -576,12 +679,15 @@ fn required_authority(path: &str, method: &axum::http::Method) -> Option<Authori
             Authority::ManageSource
         });
     }
+    if path == "/api/v1/stop" {
+        return Some(Authority::AdministerSystem);
+    }
     if path == "/api/v1/sources"
+        || path.starts_with("/api/v1/sources/")
         || path.ends_with("/validate")
         || path.ends_with("/start")
         || path.ends_with("/stop")
         || path.ends_with("/restart")
-        || path == "/api/v1/stop"
     {
         return Some(if method == axum::http::Method::GET {
             Authority::ViewSource
@@ -598,7 +704,12 @@ async fn list_sources(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn admin_page() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
         admin::INDEX,
     )
 }
@@ -671,6 +782,9 @@ async fn add_source(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AddSource>,
 ) -> impl IntoResponse {
+    if let Err(error) = validate_add_source(&request) {
+        return manager_error(error);
+    }
     match state.sources.add(request).await {
         Ok(source) => {
             state.events.publish(Event {
@@ -682,6 +796,48 @@ async fn add_source(
         }
         Err(error) => manager_error(error),
     }
+}
+fn validate_add_source(request: &AddSource) -> Result<(), SourceManagerError> {
+    if request.id.is_empty()
+        || request.id.len() > 64
+        || !request
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(SourceManagerError::InvalidRequest(
+            "source ID must contain only letters, digits, hyphens or underscores (maximum 64 characters)".into(),
+        ));
+    }
+    if request.kind == "rtsp" {
+        let uri = request.options.uri.as_deref().ok_or_else(|| {
+            SourceManagerError::InvalidRequest("RTSP source requires a URI".into())
+        })?;
+        let parsed = url::Url::parse(uri)
+            .map_err(|_| SourceManagerError::InvalidRequest("invalid RTSP URI".into()))?;
+        if parsed.scheme() != "rtsp"
+            || parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(SourceManagerError::InvalidRequest(
+                "RTSP URI must not contain credentials".into(),
+            ));
+        }
+        if request
+            .options
+            .credentials
+            .as_ref()
+            .is_some_and(|credentials| {
+                credentials.username.is_some() || credentials.password.is_some()
+            })
+        {
+            return Err(SourceManagerError::InvalidRequest(
+                "use environment references for RTSP credentials".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 async fn start_source(
     Path(id): Path<String>,
@@ -1283,7 +1439,22 @@ fn manager_error(error: SourceManagerError) -> (StatusCode, Json<serde_json::Val
 }
 fn onboarding_error(stage: &str, error: SourceManagerError) -> Response {
     let raw = error.to_string();
-    let (code, message) = if raw.contains("AUTHENTICATION_FAILED") {
+    let (code, message) = if raw.contains("PERMISSION_DENIED") {
+        (
+            "DISCOVERY_PERMISSION_DENIED",
+            "The streamer is not permitted to scan the local network.",
+        )
+    } else if raw.contains("UNSUPPORTED") {
+        (
+            "DISCOVERY_UNSUPPORTED",
+            "ONVIF discovery is not supported by this streamer or network.",
+        )
+    } else if raw.contains("DEVICE_UNREACHABLE") && stage == "discovery" {
+        (
+            "NETWORK_UNREACHABLE",
+            "The camera network could not be reached.",
+        )
+    } else if raw.contains("AUTHENTICATION_FAILED") {
         (
             "CREDENTIALS_REJECTED",
             "Camera found, but the supplied credentials were rejected.",
@@ -1319,7 +1490,7 @@ fn onboarding_error(stage: &str, error: SourceManagerError) -> Response {
             "stage": stage,
             "code": code,
             "message": message,
-            "details": raw,
+            "details": "Detailed provider errors are withheld to protect credentials.",
         })),
     )
         .into_response()
@@ -1333,8 +1504,8 @@ async fn remove_source(
         Err(error) => manager_error(error).into_response(),
     }
 }
-async fn show_config(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(json!(_state.config))
+async fn show_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(crate::support::sanitize_value(json!(state.config)))
 }
 async fn support_bundle(
     State(state): State<Arc<AppState>>,
@@ -1377,12 +1548,62 @@ async fn event_stream(
 #[cfg(test)]
 mod security_tests {
     use super::*;
+    use crate::auth::Role;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn admin_page_has_browser_security_headers() {
+        let response = admin_page().await.into_response();
+        assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY");
+        assert_eq!(
+            response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+            "nosniff"
+        );
+        assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("class=\"topbar\""));
+        assert!(html.contains("id=\"view-cameras\""));
+        assert!(html.contains("data-view=\"discovery\""));
+        assert!(html.contains("Preview unavailable"));
+        assert!(!html.contains("Illustrative design with sample cameras"));
+    }
+
+    #[tokio::test]
+    async fn onboarding_discovery_errors_keep_actionable_categories() {
+        for (detail, expected) in [
+            ("\"UNSUPPORTED\": no discovery", "DISCOVERY_UNSUPPORTED"),
+            (
+                "\"PERMISSION_DENIED\": socket access",
+                "DISCOVERY_PERMISSION_DENIED",
+            ),
+            ("\"DEVICE_UNREACHABLE\": no route", "NETWORK_UNREACHABLE"),
+            ("\"DISCOVERY_TIMEOUT\": elapsed", "DISCOVERY_TIMEOUT"),
+        ] {
+            let response = onboarding_error("discovery", SourceManagerError::Onvif(detail.into()));
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["code"], expected);
+        }
+    }
 
     #[test]
     fn route_authorities_keep_read_and_control_paths_distinct() {
         assert_eq!(
             required_authority("/api/v1/sources/camera", &axum::http::Method::GET),
             Some(Authority::ViewSource)
+        );
+        assert_eq!(
+            required_authority("/api/v1/sources/camera", &axum::http::Method::DELETE),
+            Some(Authority::ManageSource)
+        );
+        assert_eq!(
+            required_authority("/api/v1/sources/test", &axum::http::Method::POST),
+            Some(Authority::ManageSource)
         );
         assert_eq!(
             required_authority("/api/v1/sources/camera/playback", &axum::http::Method::GET),
@@ -1425,5 +1646,184 @@ mod security_tests {
             ),
             Some(Authority::DeleteMediaArtifact)
         );
+    }
+
+    #[test]
+    fn browser_mutations_require_same_origin() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/sources")
+            .header(header::HOST, "127.0.0.1:8080")
+            .header(header::ORIGIN, "http://127.0.0.1:8080")
+            .body(Body::empty())
+            .unwrap();
+        assert!(same_origin_or_non_browser(&request));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/sources")
+            .header(header::HOST, "127.0.0.1:8080")
+            .header(header::ORIGIN, "https://untrusted.example")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!same_origin_or_non_browser(&request));
+        assert!(local_test_host(&request));
+        let rebound = Request::builder()
+            .header(header::HOST, "untrusted.example")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!local_test_host(&rebound));
+    }
+
+    #[tokio::test]
+    async fn only_administrators_can_add_and_remove_sources() {
+        let mut config = Config::default();
+        config.security.mode = SecurityMode::LocalAdminAuth;
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let mut state = AppState::new(config, FrameBuffer::new(4), shutdown, receiver);
+        state.authenticator = BearerAuthenticator::from_test_tokens(&[
+            (
+                "viewer-placeholder",
+                Principal {
+                    id: "viewer".into(),
+                    role: Role::Viewer,
+                },
+            ),
+            (
+                "admin-placeholder",
+                Principal {
+                    id: "admin".into(),
+                    role: Role::Administrator,
+                },
+            ),
+        ]);
+        let app = router(Arc::new(state));
+        let add = |token: &str, body: &'static str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/sources")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let body = r#"{"id":"test-source","kind":"synthetic"}"#;
+        assert_eq!(
+            app.clone()
+                .oneshot(add("viewer-placeholder", body))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(add(
+                    "admin-placeholder",
+                    r#"{"id":"bad/id","kind":"synthetic"}"#
+                ))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(add("admin-placeholder", body))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+        let remove = |token: &str| {
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/sources/test-source")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone()
+                .oneshot(remove("viewer-placeholder"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.oneshot(remove("admin-placeholder"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn vision_mutation_requires_admin_and_valid_settings() {
+        let mut config = Config::default();
+        config.security.mode = SecurityMode::LocalAdminAuth;
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let mut state = AppState::new(config, FrameBuffer::new(4), shutdown, receiver);
+        state.authenticator = BearerAuthenticator::from_test_tokens(&[
+            (
+                "viewer-placeholder",
+                Principal {
+                    id: "viewer".into(),
+                    role: Role::Viewer,
+                },
+            ),
+            (
+                "admin-placeholder",
+                Principal {
+                    id: "admin".into(),
+                    role: Role::Administrator,
+                },
+            ),
+        ]);
+        let app = router(Arc::new(state));
+        let request = |token: &str, body: &'static str| {
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/vision/config")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let valid = r#"{"enabled":false,"model":"gpt-5.4-mini","intervalSeconds":5,"frames":5,"spacingSeconds":2}"#;
+        let invalid = r#"{"enabled":false,"model":"gpt-5.4-mini","intervalSeconds":0,"frames":5,"spacingSeconds":2}"#;
+        assert_eq!(
+            app.clone()
+                .oneshot(request("viewer-placeholder", valid))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request("admin-placeholder", invalid))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            app.oneshot(request("admin-placeholder", valid))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+
+    #[test]
+    fn source_validation_rejects_embedded_credentials() {
+        let source: AddSource = serde_json::from_value(json!({
+            "id": "test", "kind": "rtsp", "uri": "rtsp://user:password@example.test/stream"
+        }))
+        .unwrap();
+        assert!(validate_add_source(&source).is_err());
     }
 }

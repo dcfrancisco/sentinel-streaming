@@ -14,7 +14,7 @@ security:
 This mode requires a loopback bind, opens the Admin/API surface without login,
 and is not production-safe. The Admin UI labels the active mode.
 
-For authenticated local or standalone operation, use:
+Authenticated local or standalone operation is the default:
 
 ```yaml
 security:

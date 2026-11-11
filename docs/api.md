@@ -24,14 +24,14 @@ Authorization: Bearer <token>
 The CLI can store a token through its profile/auth workflow. Do not put tokens
 in shell history, source files, or committed configuration.
 
-`OPEN_LOCAL_TEST` is the explicit camera-free development mode. It requires a
+`OPEN_LOCAL_TEST` is an opt-in development mode. It requires a
 loopback bind and exposes the Admin/API surface without login. `LOCAL_ADMIN_AUTH`
-requires bearer credentials and fails closed when they are missing.
+requires bearer credentials, is the default, and fails closed when they are missing.
 
 `GET /api/v1/auth/whoami` returns the authenticated principal and role. Viewer
-accounts can read sources and playback; operators can validate, inspect
-diagnostics, and control capability-authorized PTZ; administrators can manage
-sources and onboarding. Authorization is enforced server-side.
+accounts can read sources and playback; operators can inspect diagnostics and
+control capability-authorized PTZ; administrators can manage and validate
+sources and perform onboarding. Authorization is enforced server-side.
 
 ## Endpoints
 
@@ -42,7 +42,7 @@ sources and onboarding. Authorization is enforced server-side.
 | GET | `/api/v1/status` | Runtime, metrics, and buffer snapshot |
 | GET | `/api/v1/version` | Service name and version |
 | POST | `/api/v1/stop` | Request graceful shutdown |
-| GET | `/api/v1/config` | Read-only effective configuration with secrets masked |
+| GET | `/api/v1/config` | Read-only startup configuration with secrets masked |
 | GET | `/api/v1/support/bundle` | Sanitized support-bundle snapshot for local export |
 | GET | `/api/v1/sources` | List registered sources |
 | GET | `/api/v1/sources/providers` | List camera provider capabilities |
@@ -75,6 +75,8 @@ sources and onboarding. Authorization is enforced server-side.
 | GET | `/api/v1/preview` | Latest JPEG frame |
 | GET | `/api/v1/streams/{source_id}/mjpeg` | Continuous multipart MJPEG |
 | GET | `/api/v1/vision/latest` | Latest successful scene observation |
+| GET | `/api/v1/vision/config` | Runtime vision settings and worker status |
+| PUT | `/api/v1/vision/config` | Administrator-only runtime vision settings update |
 | GET | `/api/v1/events` | Recent bounded events |
 | GET | `/api/v1/events/latest` | Most recent event |
 | GET | `/api/v1/events/{id}` | Event lookup |
@@ -82,6 +84,17 @@ sources and onboarding. Authorization is enforced server-side.
 | GET | `/metrics` | Prometheus-compatible text metrics |
 
 Unsupported source adapters return `501 Not Implemented`.
+Source IDs registered through the API are limited to 64 ASCII letters, digits,
+hyphens or underscores. RTSP URLs must not embed credentials; use environment
+credential references.
+
+`PUT /api/v1/vision/config` accepts the complete object
+`{"enabled":false,"model":"gpt-5.4-mini","intervalSeconds":5,"frames":5,"spacingSeconds":2}`.
+Intervals and spacing must be 1–3600 seconds, and frames 1–10. Updates apply
+only to the running process and reset on restart. The key is never part of this
+API. Enabling requires `OPENAI_API_KEY` and an enabled frame buffer. Disabling
+cancels the worker before the request returns. Browser mutations with an Origin
+must be same-origin; cross-origin browser access is not enabled by default.
 
 The current decoded processing runtime is single-active-source. Multiple source
 records can be registered and controlled, but frame, MJPEG, preview, and Vision
