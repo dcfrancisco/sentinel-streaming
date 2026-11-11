@@ -456,6 +456,9 @@ impl VisionControl {
         state: &crate::api::AppState,
     ) -> Result<(), &'static str> {
         settings.validate()?;
+        if settings.enabled && !state.config.pipeline.vision {
+            return Err("vision is disabled by pipeline.vision");
+        }
         if settings.enabled && !state.config.buffer.enabled {
             return Err("vision requires the frame buffer to be enabled");
         }
@@ -948,6 +951,24 @@ mod tests {
             .unwrap();
             assert!(result.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_vision_cannot_override_disabled_pipeline() {
+        let mut config = crate::config::Config::default();
+        config.pipeline.vision = false;
+        config.vision.enabled = true;
+        let (shutdown, receiver) = watch::channel(false);
+        let state = crate::api::AppState::new(config, FrameBuffer::new(4), shutdown, receiver);
+        let (mut settings, running) = state.vision_control.snapshot().await;
+        assert!(!settings.enabled);
+        assert!(!running);
+        settings.enabled = true;
+        assert_eq!(
+            state.vision_control.apply(settings, &state).await,
+            Err("vision is disabled by pipeline.vision")
+        );
+        assert!(!state.vision_control.snapshot().await.1);
     }
 
     #[tokio::test]
