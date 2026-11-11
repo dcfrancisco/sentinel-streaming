@@ -3,7 +3,7 @@ name = "sentinel-streaming"
 version = "0.1.0"
 edition = "2021"
 description = "Headless, extensible streaming engine for the Sentinel Platform"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 axum = "0.7"
