@@ -120,12 +120,13 @@ schema and precedence rules.
 
 ## Administration
 
-Open `http://127.0.0.1:8080/admin` for the existing infrastructure
-administration console. In authenticated mode, sign in with the configured
-administrator token. Discover and inspect a camera or use the Advanced form to
-register a source, then start it and open its preview. The dashboard, vision,
-events and diagnostics sections expose available operational data; some
-management workflows are still incomplete.
+Open `http://127.0.0.1:8080/admin` for the camera-first administration console.
+Use **Cameras** to see registered sources and actual frame previews, and
+**Add camera** to discover ONVIF devices or register RTSP manually. In
+authenticated mode, sign in with the configured administrator token. The
+console also provides Overview, AI Vision, and read-only Settings views.
+Simultaneous independent camera streams and durable camera edits are not yet
+supported; see the documented limits in the admin-console guide.
 
 See [docs/admin-console.md](docs/admin-console.md) for setup, security and
 current limitations.

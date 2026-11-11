@@ -1439,7 +1439,22 @@ fn manager_error(error: SourceManagerError) -> (StatusCode, Json<serde_json::Val
 }
 fn onboarding_error(stage: &str, error: SourceManagerError) -> Response {
     let raw = error.to_string();
-    let (code, message) = if raw.contains("AUTHENTICATION_FAILED") {
+    let (code, message) = if raw.contains("PERMISSION_DENIED") {
+        (
+            "DISCOVERY_PERMISSION_DENIED",
+            "The streamer is not permitted to scan the local network.",
+        )
+    } else if raw.contains("UNSUPPORTED") {
+        (
+            "DISCOVERY_UNSUPPORTED",
+            "ONVIF discovery is not supported by this streamer or network.",
+        )
+    } else if raw.contains("DEVICE_UNREACHABLE") && stage == "discovery" {
+        (
+            "NETWORK_UNREACHABLE",
+            "The camera network could not be reached.",
+        )
+    } else if raw.contains("AUTHENTICATION_FAILED") {
         (
             "CREDENTIALS_REJECTED",
             "Camera found, but the supplied credentials were rejected.",
@@ -1550,8 +1565,30 @@ mod security_tests {
             .unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("class=\"topbar\""));
-        assert!(html.contains("id=\"camera-layout\""));
-        assert!(html.contains("No cameras registered"));
+        assert!(html.contains("id=\"view-cameras\""));
+        assert!(html.contains("data-view=\"discovery\""));
+        assert!(html.contains("Preview unavailable"));
+        assert!(!html.contains("Illustrative design with sample cameras"));
+    }
+
+    #[tokio::test]
+    async fn onboarding_discovery_errors_keep_actionable_categories() {
+        for (detail, expected) in [
+            ("\"UNSUPPORTED\": no discovery", "DISCOVERY_UNSUPPORTED"),
+            (
+                "\"PERMISSION_DENIED\": socket access",
+                "DISCOVERY_PERMISSION_DENIED",
+            ),
+            ("\"DEVICE_UNREACHABLE\": no route", "NETWORK_UNREACHABLE"),
+            ("\"DISCOVERY_TIMEOUT\": elapsed", "DISCOVERY_TIMEOUT"),
+        ] {
+            let response = onboarding_error("discovery", SourceManagerError::Onvif(detail.into()));
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["code"], expected);
+        }
     }
 
     #[test]

@@ -40,76 +40,95 @@ and operations. This console is separate from Sentinel Home, Sentinel Campus,
 and Sentinel Buildings. It must not become another homeowner, campus, or
 building surveillance application.
 
-## Primary modes
+## Views and routine tasks
 
-- **SETUP** — discover, install, verify, configure, and name cameras.
-- **OPERATIONS** — inspect streams, health, recovery, AI processing, media
-  gateway state, events/logs, configuration, and diagnostics.
+The embedded console has five views:
 
-## Add Camera wizard
+- **Overview** reports streamer identity/status, registered/active/disconnected
+  camera counts, active stream count, AI state, and actionable recent alerts.
+- **Cameras** is the primary workspace. Registered sources appear as compact
+  cards with friendly names, connection/stream state, a real frame preview
+  when the source is running and the frame API has data, plus details/actions.
+  An unavailable preview states that it is unavailable; the UI does not
+  substitute sample footage.
+- **Discovery** starts bounded ONVIF discovery, lists devices returned by the
+  service, collects camera credentials only for inspection, and allows a
+  verified camera to be registered. Manual RTSP setup is also available.
+- **AI Vision** changes runtime-only vision settings, reports whether a
+  credential is configured (never its value), shows provider failure counters,
+  and displays the latest available observation.
+- **Settings** is read-only and shows selected configuration, security mode,
+  media-gateway status, health details, and a support-bundle download.
 
-The default path is designed for a non-technical operator:
+To add an ONVIF camera, open **Add camera**, leave the discovery address blank
+for the default local-network scan, start discovery, select a result, enter
+credentials if needed, and choose **Verify camera**. Review the returned
+capability checks, set a friendly name, and save. Saving registers the source;
+it does not start it. Open **Cameras**, select the new source, and choose
+**Start camera** to begin streaming and make a real frame preview available.
+If the scan returns no ONVIF devices, use manual RTSP setup; an empty discovery
+result is not evidence that no cameras are connected.
 
-1. Choose **Add Camera**.
-2. Discover cameras using supported local mechanisms such as ONVIF.
-3. Select a discovered device.
-4. Request credentials only when required.
-5. Discover ONVIF/device/media/PTZ capabilities.
-6. Select an appropriate usable video profile automatically.
-7. Verify connectivity, ingest, browser playback, and available capabilities.
-8. Show a live preview before committing the camera.
-9. Capture a friendly name and location.
-10. Save the camera for authorized Sentinel API consumers.
+For manual setup, provide a unique camera ID, name, and RTSP URL. Put
+credentials in the separate fields, not in the URL. Query strings are allowed
+in the RTSP path. After adding, start the source from **Cameras**. RTSP
+playback, capture, and PTZ controls appear only where their source/API
+capabilities support them.
 
-Manual RTSP configuration remains available under **Advanced** for unsupported
-or unusual devices. It is not the normal onboarding path.
+## Discovery outcomes and troubleshooting
 
-## Verification result
+The UI distinguishes a completed search with no ONVIF responders from
+unsupported discovery, permission denial, timeout, and network failure. Check
+that Sentinel and the camera are on the same local network, that the operating
+system allows local-network access, and that the camera supports ONVIF. If not,
+use the manual RTSP flow. A registered camera that is stopped must be started;
+an offline camera or missing frame is shown as unavailable rather than as a
+placeholder.
 
-The wizard should present normalized results for:
+If a camera will not start, open its details and use **Verify connection**
+where offered. Check the source status and Settings diagnostics. For browser
+playback, a running ingest and available browser playback gateway are separate
+conditions; the current-frame preview can work even if an RTSP browser player
+is unavailable. Support bundles can contain operational information, so
+review and redact them before sharing.
 
-- camera connectivity
-- ONVIF discovery/service access
-- video profile
-- RTSP ingest
-- browser playback
-- audio (`supported` or `unsupported`)
-- PTZ and individual operations (`supported` or `unsupported`)
-- AI (`ready` or `not configured`)
-- health monitoring
+To enable OpenAI Vision, set `OPENAI_API_KEY` in the service environment, then
+enable vision in startup configuration or in **AI Vision**. The model field
+defaults to the documented image-capable `gpt-5.4-mini` and can be overridden
+through `OPENAI_VISION_MODEL` at startup. The key is never editable or
+retrievable in the console. Vision settings changed in the UI are not
+persistent and revert after restart. A provider failure is reported in
+diagnostics and does not stop camera capture.
 
-Each check must distinguish unsupported, not configured, failed, and not
-checked. Technical details remain available for operators without making them a
-prerequisite for ordinary setup.
+## Runtime and product boundaries
 
-## Operations areas
+The current decoded pipeline has **one active source at a time**. The inventory
+can contain multiple cameras, but starting a different source switches the
+active processing path; simultaneous independent streams/previews and
+per-camera concurrent AI are not implemented. Vision configuration is global
+and applies to that active source. Camera edits, durable configuration
+mutation, viewer counts, latency and several other operational metrics are
+not available; the console avoids inventing them.
 
-The console should provide Dashboard, Cameras, Discovery, Streams, AI /
-Processing, Media Gateway, Health, Events / Logs, System Configuration, and
-About / Diagnostics areas. PTZ controls are visible and enabled only for
-capabilities confirmed for the selected camera/profile, and PTZ test actions
-use the protected API and produce operational evidence.
+The console is an optional surface over Sentinel Streaming's existing Rust
+services. It manages cameras, streaming resources, and AI observations; it
+does not implement homeowner intrusion policies, alarms, or other Sentinel
+Home Security workflows.
 
-Playback uses Sentinel's normalized playback contract. The console and domain
-applications do not depend on MediaMTX URLs, ports, profile tokens, codecs, or
-WHIP/WHEP details.
+## Security and verification
 
-## Camera onboarding
+Authenticated mode is the default. The `LOCAL_ADMIN_AUTH` mode requires an
+administrator bearer token configured through the service environment. The
+explicit `OPEN_LOCAL_TEST` mode bypasses authentication and is accepted only
+for loopback binding; use it only for local development. Do not expose it on a
+network interface. Browser mutations are same-origin checked, server
+authorization protects administrative operations, and RTSP credentials are
+entered separately from the stream URL. The browser does not receive or store
+the OpenAI API key.
 
-The Add Camera flow is discovery-first:
-
-1. Find cameras.
-2. Select a camera.
-3. Enter credentials only when required.
-4. Inspect ONVIF capabilities.
-5. Automatically select the best usable media profile.
-6. Validate RTSP.
-7. Register browser playback.
-8. Open live preview and expose PTZ testing only when supported.
-9. Assign a friendly name and location.
-
-The normal path presents product-language results such as “Camera rejected the
-supplied credentials” or “No usable video profile was found.” Raw protocol
-details remain under a technical-details view. Onboarding sessions are
-in-memory and intentionally not a persistence or secrets-management subsystem;
-those concerns are later product work.
+For a real-camera smoke test, add and verify a camera through Discovery, save
+it, start it from Cameras, and confirm the preview updates with actual camera
+frames. Then optionally configure `OPENAI_API_KEY`, enable vision, and confirm
+an observation and vision metrics appear while frames continue updating. This
+procedure is not evidence that a physical camera or live OpenAI request was
+tested in a given build; report only tests actually performed.

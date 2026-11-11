@@ -1,0 +1,1184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinel Streaming</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 15px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #e7edf6;
+      background: #0c111a;
+      font-synthesis: none;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { min-width: 320px; min-height: 100vh; margin: 0; background: #0c111a; }
+    button, input, select { font: inherit; }
+    button, a, input, select, summary { outline-offset: 3px; }
+    :focus-visible { outline: 2px solid #78a7ff; }
+    .topbar { position: sticky; z-index: 3; top: 0; display: flex; align-items: center; gap: 1.5rem; min-height: 68px; padding: 0 max(22px, calc((100vw - 1200px) / 2)); border-bottom: 1px solid #263142; background: #111925; }
+    .brand { display: flex; align-items: center; gap: .65rem; color: #f2f5fb; font-size: 1.05rem; font-weight: 650; white-space: nowrap; }
+    .brand svg { width: 23px; height: 23px; color: #8eb3ff; }
+    .service-status, .status { display: inline-flex; align-items: center; gap: .45rem; width: fit-content; padding: .24rem .6rem; border: 1px solid #354256; border-radius: 999px; color: #b7c3d4; background: #1b2533; font-size: .79rem; white-space: nowrap; }
+    .service-status::before, .status::before { width: 7px; height: 7px; border-radius: 50%; background: currentColor; content: ""; }
+    .is-good { border-color: #245c3e; color: #8ee0a7; background: #11291c; }
+    .is-warn { border-color: #665220; color: #f3cb70; background: #2a2314; }
+    .is-bad { border-color: #693b3b; color: #ffa2a2; background: #2a1719; }
+    .is-muted { color: #b1bdcf; }
+    .primary-nav { display: flex; align-items: center; gap: .2rem; margin-left: auto; overflow-x: auto; }
+    .primary-nav a { padding: .55rem .7rem; border-radius: 7px; color: #b4c0d0; text-decoration: none; white-space: nowrap; font-size: .88rem; }
+    .primary-nav a:hover, .primary-nav a[aria-current="page"] { color: #f2f6ff; background: #202c3c; }
+    main { width: min(1200px, 100%); margin: 0 auto; padding: 1.4rem 22px 3rem; }
+    .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: 0 0 1.15rem; }
+    .page-heading h1 { margin: 0; color: #f1f5fb; font-size: 1.45rem; font-weight: 650; letter-spacing: -.025em; }
+    .page-heading p { margin: .25rem 0 0; color: #9eacbf; font-size: .9rem; }
+    .panel { min-width: 0; padding: 1rem; border: 1px solid #283445; border-radius: 10px; background: #131c28; }
+    .panel + .panel { margin-top: 1rem; }
+    .panel h2, .panel h3 { margin: 0 0 .7rem; font-size: 1rem; font-weight: 620; }
+    .muted, .help { color: #9ba9bc; }
+    .help { margin: .35rem 0; font-size: .85rem; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: .4rem; min-height: 38px; padding: .52rem .8rem; border: 1px solid #3b4a60; border-radius: 7px; color: #e8eef8; background: #202c3c; text-decoration: none; cursor: pointer; }
+    .button:hover:not(:disabled) { border-color: #617695; background: #27364a; }
+    .button-primary { border-color: #477be8; color: white; background: #3268d5; }
+    .button-primary:hover:not(:disabled) { border-color: #77a0ff; background: #3a73e5; }
+    .button-danger { border-color: #693c42; color: #ffb1b1; background: #2b1d22; }
+    .button:disabled { cursor: not-allowed; opacity: .48; }
+    .button-small { min-height: 32px; padding: .35rem .58rem; font-size: .84rem; }
+    .button-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+    input, select { width: 100%; min-height: 40px; padding: .55rem .65rem; border: 1px solid #39485c; border-radius: 7px; color: #e8edf6; background: #0e1621; }
+    input::placeholder { color: #718096; }
+    label { display: grid; gap: .35rem; min-width: 0; color: #c4cfde; font-size: .87rem; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+    .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-top: .9rem; }
+    .feedback { min-height: 1.3em; margin: .55rem 0 0; color: #aab8ca; font-size: .88rem; }
+    .feedback.error { color: #ffaaaa; }
+    .feedback.success { color: #8ee0a7; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin: 1rem 0; }
+    .stat { min-width: 0; padding: .9rem; border: 1px solid #283445; border-radius: 9px; background: #131c28; }
+    .stat-label { display: block; color: #9ba9bc; font-size: .82rem; }
+    .stat-value { display: block; margin-top: .25rem; color: #f0f4fa; font-size: 1.45rem; font-weight: 650; }
+    .overview-columns { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(260px, .8fr); gap: 1rem; }
+    .camera-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: .9rem; }
+    .camera-card { min-width: 0; overflow: hidden; border: 1px solid #2a3749; border-radius: 10px; background: #151f2c; }
+    .camera-preview { position: relative; display: grid; aspect-ratio: 16 / 9; overflow: hidden; place-items: center; background: #202b3b; }
+    .camera-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+    .camera-preview img[hidden] { display: none; }
+    .preview-message { max-width: 90%; padding: .75rem; color: #aab7ca; text-align: center; font-size: .85rem; }
+    .camera-card-body { padding: .8rem; }
+    .camera-name { overflow: hidden; margin: 0; color: #edf2fa; font-size: 1rem; font-weight: 620; text-overflow: ellipsis; }
+    .camera-name-wrap { overflow-wrap: anywhere; }
+    .camera-subtitle { overflow: hidden; margin: .18rem 0 .55rem; color: #94a3b8; font-size: .81rem; text-overflow: ellipsis; }
+    .camera-statuses { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0 0 .75rem; }
+    .camera-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .camera-actions .button { flex: 1 1 auto; }
+    .state-message { padding: 1rem; border: 1px dashed #3a485b; border-radius: 8px; color: #a9b6c8; background: #111a26; }
+    .state-message strong { display: block; margin-bottom: .2rem; color: #e2e8f1; }
+    .alert-list, .device-list, .observation-list { display: grid; gap: .55rem; }
+    .alert-item, .device-item, .observation { padding: .7rem .75rem; border: 1px solid #293648; border-radius: 8px; background: #101823; }
+    .alert-item { display: flex; align-items: flex-start; gap: .6rem; }
+    .alert-item p, .device-item p, .observation p { margin: 0; }
+    .alert-item .status { flex: 0 0 auto; }
+    .device-item { display: flex; align-items: center; justify-content: space-between; gap: .8rem; }
+    .device-item h3 { margin: 0; font-size: .95rem; }
+    .device-item p { margin-top: .2rem; color: #98a7bb; font-size: .82rem; }
+    .device-detail { margin-top: .7rem; padding-top: .7rem; border-top: 1px solid #2a3749; }
+    .device-detail .credential-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+    .check-list { display: grid; gap: .3rem; padding-left: 1.1rem; color: #b4c1d2; font-size: .86rem; }
+    .check-list .pass, .check-list .ready, .check-list .supported { color: #8ee0a7; }
+    .check-list .fail { color: #ffaaaa; }
+    .check-list .unsupported { color: #f3cb70; }
+    .two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+    .key-value { display: grid; grid-template-columns: minmax(130px, .65fr) minmax(0, 1fr); gap: .45rem .8rem; margin: 0; }
+    .key-value dt { color: #9eacbf; }
+    .key-value dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #e1e8f2; }
+    details { margin-top: .6rem; }
+    details > summary { width: fit-content; color: #b6c4d6; cursor: pointer; font-size: .86rem; }
+    pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #bac8d9; font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .settings-list { display: grid; gap: .55rem; }
+    .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .6rem 0; border-bottom: 1px solid #263244; }
+    .settings-row:last-child { border-bottom: 0; }
+    .settings-row span:first-child { color: #a4b1c3; }
+    .settings-row span:last-child { color: #e4eaf3; text-align: right; overflow-wrap: anywhere; }
+    .camera-vision-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .7rem 0; border-bottom: 1px solid #293648; }
+    .camera-vision-row:last-child { border-bottom: 0; }
+    .toggle { display: inline-flex; align-items: center; gap: .5rem; color: #c5d0df; cursor: pointer; }
+    .toggle input { width: 18px; min-height: auto; height: 18px; accent-color: #4a83ef; }
+    dialog { width: min(850px, calc(100vw - 28px)); max-height: min(90vh, 900px); padding: 0; overflow: auto; border: 1px solid #39485d; border-radius: 12px; color: #e7edf6; background: #111a26; box-shadow: 0 24px 80px #000a; }
+    dialog::backdrop { background: #03070dcc; }
+    .dialog-header { position: sticky; z-index: 2; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .9rem 1rem; border-bottom: 1px solid #2d394b; background: #111a26; }
+    .dialog-header h2 { overflow-wrap: anywhere; margin: 0; font-size: 1.05rem; }
+    .dialog-content { display: grid; gap: .8rem; padding: 1rem; }
+    .detail-preview { overflow: hidden; border: 1px solid #2a3749; border-radius: 8px; background: #202b3b; }
+    .detail-preview .camera-preview { max-height: 52vh; }
+    .detail-section { padding: .85rem; border: 1px solid #293648; border-radius: 8px; background: #141e2b; }
+    .detail-section h3 { margin: 0 0 .6rem; font-size: .93rem; }
+    .player { width: 100%; min-height: 120px; margin-top: .65rem; border-radius: 7px; background: #080d15; }
+    .player:empty { display: none; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+    @media (max-width: 760px) {
+      .topbar { position: static; flex-wrap: wrap; gap: .55rem; padding: .7rem 14px; }
+      .brand { font-size: .98rem; }
+      .primary-nav { order: 2; width: 100%; margin: 0; }
+      .primary-nav a { padding: .48rem .6rem; }
+      main { padding: 1rem 14px 2rem; }
+      .overview-columns, .two-column { grid-template-columns: 1fr; }
+      .camera-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 235px), 1fr)); }
+    }
+    @media (max-width: 480px) {
+      .service-status { margin-left: auto; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .page-heading { align-items: flex-start; }
+      .page-heading .button { flex: 0 0 auto; }
+      .form-grid, .device-detail .credential-fields { grid-template-columns: 1fr; }
+      .device-item { align-items: flex-start; flex-direction: column; }
+      .camera-grid { grid-template-columns: 1fr; }
+      .key-value { grid-template-columns: minmax(105px, .7fr) minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"></rect><path d="m16 10 5-3v10l-5-3"></path></svg>
+      <span>Sentinel Streaming</span>
+    </div>
+    <span id="service-status" class="service-status is-muted" aria-live="polite">Checking service</span>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#cameras" data-view="cameras" aria-current="page">Cameras</a>
+      <a href="#discovery" data-view="discovery">Discovery</a>
+      <a href="#ai-vision" data-view="ai-vision">AI Vision</a>
+      <a href="#settings" data-view="settings">Settings</a>
+    </nav>
+  </header>
+  <main>
+    <section id="auth-panel" class="panel" hidden>
+      <h2>Sign in</h2>
+      <p class="help">Enter an administrator token configured for this streamer.</p>
+      <div class="form-actions">
+        <label class="sr-only" for="auth-token">Administrator token</label>
+        <input id="auth-token" type="password" autocomplete="current-password" placeholder="Administrator token">
+        <button id="auth-login" class="button button-primary" type="button">Sign in</button>
+      </div>
+      <p id="auth-status" class="feedback" role="status"></p>
+    </section>
+    <p id="app-feedback" class="feedback" role="status"></p>
+
+    <section id="view-overview" class="view" hidden>
+      <div class="page-heading">
+        <div><h1>Overview</h1><p>Streamer and camera activity at a glance.</p></div>
+        <button id="overview-refresh" class="button" type="button">Refresh</button>
+      </div>
+      <section class="panel" aria-labelledby="streamer-heading">
+        <h2 id="streamer-heading">Streamer</h2>
+        <dl id="streamer-summary" class="key-value"></dl>
+      </section>
+      <div id="camera-stats" class="stats" aria-label="Camera summary"></div>
+      <div class="overview-columns">
+        <section class="panel"><h2>Camera status</h2><div id="overview-cameras" class="device-list"></div></section>
+        <section class="panel"><h2>Recent alerts</h2><div id="overview-alerts" class="alert-list" aria-live="polite"></div></section>
+      </div>
+    </section>
+
+    <section id="view-cameras" class="view">
+      <div class="page-heading">
+        <div><h1>Cameras</h1><p id="camera-summary">Loading your camera sources…</p></div>
+        <a class="button button-primary" href="#discovery" data-view="discovery">Add camera</a>
+      </div>
+      <div id="camera-grid" class="camera-grid" aria-live="polite"></div>
+    </section>
+
+    <section id="view-discovery" class="view" hidden>
+      <div class="page-heading"><div><h1>Add a camera</h1><p>Find an ONVIF camera on your local network, or enter an RTSP stream manually.</p></div></div>
+      <section class="panel">
+        <h2>Discover network cameras</h2>
+        <p class="help">Discovery looks for ONVIF-compatible cameras on the same local network. Cameras without ONVIF may not appear; use manual RTSP setup for those.</p>
+        <form id="discovery-form">
+          <div class="form-grid">
+            <label>Discovery address <span class="help">Usually leave blank to search the local network.</span><input name="address" placeholder="Optional, e.g. 239.255.255.250:3702"></label>
+            <label>Search time <span class="help">How long to listen for camera responses.</span><select name="timeout"><option value="3000">3 seconds</option><option value="5000" selected>5 seconds</option><option value="10000">10 seconds</option></select></label>
+          </div>
+          <div class="form-actions"><button id="discover-button" class="button button-primary" type="submit">Find cameras</button><span id="discovery-progress" class="feedback" role="status"></span></div>
+        </form>
+        <div id="discovery-state" class="feedback" role="status"></div>
+        <div id="discovery-results" class="device-list"></div>
+      </section>
+      <details class="panel">
+        <summary>Set up an RTSP camera manually</summary>
+        <p class="help">Use the camera’s RTSP stream URL. Do not put a username or password in the URL; enter them in the separate fields.</p>
+        <form id="manual-source-form">
+          <div class="form-grid">
+            <label>Camera name<input name="name" required maxlength="120" placeholder="e.g. Front driveway"></label>
+            <label>Camera ID<input name="id" required maxlength="64" pattern="[A-Za-z0-9_-]+" placeholder="e.g. front-driveway"></label>
+            <label class="span-two">RTSP address<input name="uri" required type="url" placeholder="rtsp://camera.local:554/stream"></label>
+            <label>Username (if required)<input name="username" autocomplete="off"></label>
+            <label>Password (if required)<input name="password" type="password" autocomplete="new-password"></label>
+          </div>
+          <div class="form-actions"><button class="button button-primary" type="submit">Add camera</button><span id="manual-source-feedback" class="feedback" role="status"></span></div>
+        </form>
+      </details>
+    </section>
+
+    <section id="view-ai-vision" class="view" hidden>
+      <div class="page-heading"><div><h1>AI Vision</h1><p>Configure scene observations for the active camera stream.</p></div></div>
+      <section class="panel">
+        <h2>OpenAI settings</h2>
+        <p id="vision-health" class="help">Loading vision status…</p>
+        <form id="vision-form">
+          <div class="form-grid">
+            <label>Model<input name="model" required maxlength="128" pattern="[A-Za-z0-9_.:-]+"></label>
+            <label>Analysis interval (seconds)<input name="intervalSeconds" type="number" min="1" max="3600" required></label>
+            <label>Frames per analysis<input name="frames" type="number" min="1" max="10" required></label>
+            <label>Spacing between frames (seconds)<input name="spacingSeconds" type="number" min="1" max="3600" required></label>
+          </div>
+          <div class="form-actions">
+            <label class="toggle"><input name="enabled" type="checkbox"> Enable AI Vision for the active camera</label>
+            <button class="button button-primary" type="submit">Save AI settings</button>
+            <span id="vision-feedback" class="feedback" role="status"></span>
+          </div>
+        </form>
+      </section>
+      <section class="panel">
+        <h2>Camera processing</h2>
+        <p class="help">This runtime processes one camera stream at a time. AI Vision applies only to the currently active stream; per-camera simultaneous processing is not yet supported.</p>
+        <div id="vision-camera-list"></div>
+      </section>
+      <section class="panel"><h2>Latest observation</h2><div id="latest-observation" class="observation-list"></div></section>
+    </section>
+
+    <section id="view-settings" class="view" hidden>
+      <div class="page-heading"><div><h1>Settings</h1><p>Read-only runtime configuration and service diagnostics.</p></div></div>
+      <div class="two-column">
+        <section class="panel"><h2>Streamer</h2><div id="settings-streamer" class="settings-list"></div></section>
+        <section class="panel"><h2>Network discovery</h2><div id="settings-discovery" class="settings-list"></div><a class="button button-small" href="#discovery" data-view="discovery">Open discovery</a></section>
+        <section class="panel"><h2>Security</h2><div id="settings-security" class="settings-list"></div></section>
+        <section class="panel"><h2>Media gateway</h2><div id="settings-media" class="settings-list"></div></section>
+      </div>
+      <details class="panel">
+        <summary>Advanced diagnostics</summary>
+        <p class="help">Support bundles contain operational details. Review them before sharing.</p>
+        <div class="form-actions"><button id="support-bundle" class="button" type="button">Download support bundle</button><span id="support-feedback" class="feedback" role="status"></span></div>
+        <pre id="diagnostics-output"></pre>
+        <pre id="configuration-output"></pre>
+      </details>
+    </section>
+  </main>
+
+  <dialog id="camera-dialog" aria-labelledby="camera-dialog-title">
+    <div class="dialog-header"><h2 id="camera-dialog-title">Camera details</h2><button id="camera-dialog-close" class="button button-small" type="button">Close</button></div>
+    <div id="camera-dialog-content" class="dialog-content"></div>
+  </dialog>
+
+  <script>
+    const rawFetch = window.fetch.bind(window);
+    let authToken = sessionStorage.getItem('sentinel_access_token') || '';
+    window.fetch = (input, init = {}) => {
+      const headers = new Headers(init.headers || {});
+      const url = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+      if (authToken && url.origin === window.location.origin) headers.set('Authorization', `Bearer ${authToken}`);
+      return rawFetch(input, {...init, headers});
+    };
+
+    const state = {version: null, status: null, sources: [], vision: null, events: [], config: null, media: null};
+    const cameraGrid = document.querySelector('#camera-grid');
+    const cameraDialog = document.querySelector('#camera-dialog');
+    const dialogContent = document.querySelector('#camera-dialog-content');
+    const previewCleanups = new Set();
+    let dialogPreviewCleanup = null;
+    let dialogPlayerCleanup = null;
+    const views = ['overview', 'cameras', 'discovery', 'ai-vision', 'settings'];
+
+    function element(tag, className, content) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (content !== undefined && content !== null) node.textContent = String(content);
+      return node;
+    }
+    function formatName(source) { return source.name || source.id || 'Camera'; }
+    function normalized(value) { return String(value || '').toLowerCase(); }
+    function sourceKind(source) { return normalized(source.type || source.kind); }
+    function isRunning(source) { return normalized(source.status) === 'running'; }
+    function setFeedback(node, message, kind = '') {
+      node.textContent = message || '';
+      node.className = `feedback${kind ? ` ${kind}` : ''}`;
+    }
+    function setView(name) {
+      const selected = views.includes(name) ? name : 'cameras';
+      for (const view of views) document.querySelector(`#view-${view}`).hidden = view !== selected;
+      document.querySelectorAll('[data-view]').forEach(link => {
+        if (link.dataset.view === selected) link.setAttribute('aria-current', 'page');
+        else link.removeAttribute('aria-current');
+      });
+      if (location.hash !== `#${selected}`) history.replaceState(null, '', `#${selected}`);
+    }
+    document.querySelectorAll('[data-view]').forEach(link => link.addEventListener('click', event => {
+      event.preventDefault();
+      const view = link.dataset.view;
+      setView(view);
+      if (view === 'overview') loadOverview().catch(showPageError);
+      if (view === 'cameras') loadSources().catch(showPageError);
+      if (view === 'ai-vision') loadVision().catch(showPageError);
+      if (view === 'settings') loadSettings().catch(showPageError);
+    }));
+    window.addEventListener('hashchange', () => setView(location.hash.slice(1)));
+    setView(location.hash.slice(1) || 'cameras');
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let data = {};
+      if (text) {
+        try { data = JSON.parse(text); }
+        catch { data = {message: text}; }
+      }
+      if (!response.ok) {
+        const error = new Error(data.message || data.error || `Request failed (${response.status})`);
+        error.status = response.status;
+        error.data = data;
+        throw error;
+      }
+      return data;
+    }
+    function showPageError(error) {
+      const feedback = document.querySelector('#app-feedback');
+      setFeedback(feedback, error.message || 'The requested information could not be loaded.', 'error');
+    }
+    function row(container, label, value) {
+      const item = element('div', 'settings-row');
+      item.append(element('span', '', label), element('span', '', value));
+      container.append(item);
+    }
+    function statusClass(source) {
+      const status = normalized(source.status);
+      if (status === 'running') return 'is-good';
+      if (status === 'failed' || status === 'disconnected' || normalized(source.health) === 'unhealthy') return 'is-bad';
+      if (status === 'starting' || status === 'reconnecting' || status === 'stopping') return 'is-warn';
+      return 'is-muted';
+    }
+    function connectionLabel(source) {
+      const status = normalized(source.status);
+      if (status === 'running') return 'Online';
+      if (status === 'failed' || status === 'disconnected' || normalized(source.health) === 'unhealthy') return 'Offline';
+      if (status === 'starting' || status === 'reconnecting') return status === 'starting' ? 'Starting' : 'Reconnecting';
+      return 'Stopped';
+    }
+    function streamLabel(source) {
+      if (sourceKind(source) === 'synthetic') return isRunning(source) ? 'Test stream' : 'Test source stopped';
+      if (!isRunning(source)) return 'Stream stopped';
+      return Number(source.frames_received || 0) > 0 ? 'Streaming' : 'Connecting';
+    }
+    function disposePreviews() {
+      for (const cleanup of previewCleanups) cleanup();
+      previewCleanups.clear();
+    }
+    function makePreview(source, detail = false) {
+      const frame = element('div', `camera-preview${detail ? ' detail-camera-preview' : ''}`);
+      const image = element('img');
+      image.alt = `Live preview from ${formatName(source)}`;
+      image.hidden = true;
+      const message = element('div', 'preview-message');
+      const running = isRunning(source);
+      message.textContent = running
+        ? sourceKind(source) === 'synthetic' ? 'Connecting to test stream…' : 'Connecting to camera…'
+        : connectionLabel(source) === 'Offline' ? 'Camera is offline' : 'Camera is stopped';
+      frame.append(image, message);
+      if (!running) return {frame, cleanup: () => {}};
+      let active = true;
+      let timer;
+      let currentUrl = '';
+      async function poll() {
+        if (!active) return;
+        try {
+          const response = await fetch(`/api/v1/streams/${encodeURIComponent(source.id)}/frame`);
+          if (!response.ok) {
+            let reason = `Preview unavailable (${response.status})`;
+            try {
+              const result = await response.json();
+              if (result.error) reason = result.error;
+            } catch {}
+            image.hidden = true;
+            message.hidden = false;
+            message.textContent = reason;
+            timer = setTimeout(poll, 3000);
+            return;
+          }
+          const blob = await response.blob();
+          if (!active) return;
+          const nextUrl = URL.createObjectURL(blob);
+          image.src = nextUrl;
+          image.hidden = false;
+          message.hidden = true;
+          if (currentUrl) URL.revokeObjectURL(currentUrl);
+          currentUrl = nextUrl;
+          timer = setTimeout(poll, 1200);
+        } catch (error) {
+          image.hidden = true;
+          message.hidden = false;
+          message.textContent = `Preview unavailable: ${error.message}`;
+          timer = setTimeout(poll, 3000);
+        }
+      }
+      poll();
+      const cleanup = () => {
+        active = false;
+        clearTimeout(timer);
+        if (currentUrl) URL.revokeObjectURL(currentUrl);
+      };
+      return {frame, cleanup};
+    }
+
+    function renderCameras() {
+      disposePreviews();
+      const grid = cameraGrid;
+      grid.replaceChildren();
+      const sources = Array.isArray(state.sources) ? state.sources : [];
+      const cameras = sources.filter(source => sourceKind(source) !== 'synthetic');
+      const active = cameras.filter(isRunning).length;
+      const offline = cameras.filter(source => connectionLabel(source) === 'Offline').length;
+      document.querySelector('#camera-summary').textContent =
+        `${cameras.length} camera${cameras.length === 1 ? '' : 's'} · ${active} active · ${offline} offline`;
+      if (!sources.length) {
+        const empty = element('div', 'state-message');
+        empty.append(element('strong', '', 'No cameras added yet'), element('span', '', 'Add a camera to view its live stream here.'));
+        const add = element('a', 'button button-primary', 'Add camera');
+        add.href = '#discovery';
+        add.dataset.view = 'discovery';
+        add.addEventListener('click', event => { event.preventDefault(); setView('discovery'); });
+        empty.append(add);
+        grid.append(empty);
+        return;
+      }
+      for (const source of sources) {
+        const card = element('article', 'camera-card');
+        const preview = makePreview(source);
+        previewCleanups.add(preview.cleanup);
+        card.append(preview.frame);
+        const body = element('div', 'camera-card-body');
+        const title = element('h2', 'camera-name camera-name-wrap', formatName(source));
+        title.title = formatName(source);
+        const sub = element('p', 'camera-subtitle', source.location || (sourceKind(source) === 'synthetic' ? 'Test source' : sourceKind(source).toUpperCase()));
+        const badges = element('div', 'camera-statuses');
+        badges.append(element('span', `status ${statusClass(source)}`, connectionLabel(source)));
+        badges.append(element('span', `status ${isRunning(source) ? 'is-good' : 'is-muted'}`, streamLabel(source)));
+        if (state.vision && isRunning(source)) {
+          badges.append(element('span', `status ${state.vision.settings.enabled ? 'is-good' : 'is-muted'}`, state.vision.settings.enabled ? 'AI Vision on' : 'AI Vision off'));
+        }
+        const actions = element('div', 'camera-actions');
+        const view = element('button', 'button button-primary button-small', isRunning(source) ? 'Watch' : 'Details');
+        view.type = 'button';
+        view.addEventListener('click', () => openCameraDetails(source));
+        const startStop = element('button', 'button button-small', isRunning(source) ? 'Stop' : 'Start');
+        startStop.type = 'button';
+        startStop.addEventListener('click', () => runCameraAction(source, isRunning(source) ? 'stop' : 'start'));
+        actions.append(view, startStop);
+        body.append(title, sub, badges, actions);
+        card.append(body);
+        grid.append(card);
+      }
+      renderOverviewCameraList();
+      renderVisionCameraList();
+    }
+
+    async function loadSources() {
+      state.sources = await api('/api/v1/sources');
+      renderCameras();
+      renderOverview();
+    }
+    async function runCameraAction(source, action) {
+      const feedback = document.querySelector('#app-feedback');
+      setFeedback(feedback, `${action === 'start' ? 'Starting' : 'Stopping'} ${formatName(source)}…`);
+      try {
+        await api(`/api/v1/sources/${encodeURIComponent(source.id)}/${action}`, {method: 'POST'});
+        setFeedback(feedback, `${formatName(source)} ${action === 'start' ? 'started' : 'stopped'}.`, 'success');
+        await refreshData();
+        if (cameraDialog.open) cameraDialog.close();
+      } catch (error) {
+        setFeedback(feedback, `${action === 'start' ? 'Could not start' : 'Could not stop'} ${formatName(source)}: ${error.message}`, 'error');
+      }
+    }
+
+    function appendTechnicalDetails(container, source) {
+      const entries = [
+        ['Camera ID', source.id], ['Source type', sourceKind(source)], ['Health', source.health],
+        ['Resolution', source.resolution], ['Frame rate', Number(source.fps) > 0 ? `${Number(source.fps).toFixed(1)} fps` : null],
+        ['Frames received', Number(source.frames_received) > 0 ? source.frames_received : null],
+        ['Frames dropped', Number(source.frames_dropped) > 0 ? source.frames_dropped : null],
+        ['Reconnects', Number(source.reconnect_count) > 0 ? source.reconnect_count : null],
+        ['Last error', source.last_validation_failure && source.last_validation_failure.message],
+        ['Recovery', normalized(source.recovery) !== 'idle' ? source.recovery : null],
+        ['Media', source.media_telemetry && source.media_telemetry.detail]
+      ].filter(([, value]) => value !== null && value !== undefined && value !== '');
+      const details = element('details');
+      const summary = element('summary', '', 'Connection details');
+      const list = element('dl', 'key-value');
+      for (const [label, value] of entries) {
+        list.append(element('dt', '', label), element('dd', '', value));
+      }
+      details.append(summary, list);
+      container.append(details);
+    }
+
+    async function openCameraDetails(source) {
+      const name = formatName(source);
+      document.querySelector('#camera-dialog-title').textContent = name;
+      dialogContent.replaceChildren();
+      if (dialogPlayerCleanup) dialogPlayerCleanup();
+      dialogPlayerCleanup = null;
+      const preview = makePreview(source, true);
+      dialogPreviewCleanup = preview.cleanup;
+      const previewSection = element('section', 'detail-preview');
+      previewSection.append(preview.frame);
+      dialogContent.append(previewSection);
+
+      const status = element('div', 'camera-statuses');
+      status.append(element('span', `status ${statusClass(source)}`, connectionLabel(source)));
+      status.append(element('span', `status ${isRunning(source) ? 'is-good' : 'is-muted'}`, streamLabel(source)));
+      const actions = element('div', 'button-row');
+      const startStop = element('button', 'button button-small', isRunning(source) ? 'Stop camera' : 'Start camera');
+      startStop.type = 'button';
+      startStop.addEventListener('click', () => runCameraAction(source, isRunning(source) ? 'stop' : 'start'));
+      actions.append(startStop);
+      if (sourceKind(source) === 'rtsp') {
+        const validate = element('button', 'button button-small', 'Verify connection');
+        validate.type = 'button';
+        validate.addEventListener('click', async () => {
+          validate.disabled = true;
+          setFeedback(detailFeedback, 'Checking camera connection…');
+          try {
+            const result = await api(`/api/v1/sources/${encodeURIComponent(source.id)}/validate`, {method: 'POST'});
+            setFeedback(detailFeedback, result.valid ? 'Camera connection verified.' : result.failure?.message || 'Connection verification failed.', result.valid ? 'success' : 'error');
+            await loadSources();
+          } catch (error) { setFeedback(detailFeedback, error.message, 'error'); }
+          finally { validate.disabled = false; }
+        });
+        actions.append(validate);
+      }
+      const remove = element('button', 'button button-small button-danger', 'Remove camera');
+      remove.type = 'button';
+      remove.addEventListener('click', async () => {
+        if (!confirm(`Remove ${name} from this streamer?`)) return;
+        remove.disabled = true;
+        try {
+          await api(`/api/v1/sources/${encodeURIComponent(source.id)}`, {method: 'DELETE'});
+          cameraDialog.close();
+          await refreshData();
+        } catch (error) { setFeedback(detailFeedback, error.message, 'error'); }
+        finally { remove.disabled = false; }
+      });
+      actions.append(remove);
+
+      const statusSection = element('section', 'detail-section');
+      statusSection.append(element('h3', '', 'Camera status'), status, actions);
+      const detailFeedback = element('p', 'feedback');
+      detailFeedback.setAttribute('role', 'status');
+      statusSection.append(detailFeedback);
+      dialogContent.append(statusSection);
+
+      if (sourceKind(source) === 'rtsp') appendRtspPlayer(dialogContent, source);
+      if (sourceKind(source) === 'rtsp') appendCaptureActions(dialogContent, source);
+      if (source.capabilities?.ptz?.supported) appendPtzControls(dialogContent, source);
+      const technical = element('section', 'detail-section');
+      technical.append(element('h3', '', 'Technical information'));
+      appendTechnicalDetails(technical, source);
+      if (source.capabilities) {
+        const capabilities = element('p', 'help', `Video ${source.capabilities.video ? 'available' : 'unavailable'} · Audio ${source.capabilities.audio ? 'available' : 'unavailable'} · PTZ ${source.capabilities.ptz?.supported ? 'supported' : 'not supported'}`);
+        technical.append(capabilities);
+      }
+      dialogContent.append(technical);
+      cameraDialog.showModal();
+    }
+    document.querySelector('#camera-dialog-close').addEventListener('click', () => cameraDialog.close());
+    cameraDialog.addEventListener('close', () => {
+      if (dialogPreviewCleanup) dialogPreviewCleanup();
+      dialogPreviewCleanup = null;
+      if (dialogPlayerCleanup) dialogPlayerCleanup();
+      dialogPlayerCleanup = null;
+      dialogContent.querySelectorAll('video').forEach(video => { video.pause(); video.srcObject = null; video.removeAttribute('src'); });
+    });
+
+    function appendRtspPlayer(container, source) {
+      const section = element('section', 'detail-section');
+      section.append(element('h3', '', 'Stream player'));
+      const status = element('p', 'feedback', 'Player is not connected.');
+      const button = element('button', 'button button-small', 'Open live stream');
+      button.type = 'button';
+      const video = document.createElement('video');
+      video.className = 'player';
+      video.controls = true;
+      video.autoplay = true;
+      video.muted = true;
+      video.playsInline = true;
+      let peerConnection = null;
+      let disposed = false;
+      dialogPlayerCleanup = () => {
+        disposed = true;
+        if (peerConnection) peerConnection.close();
+        peerConnection = null;
+      };
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        setFeedback(status, 'Connecting to the stream…');
+        try {
+          const playback = await api(`/api/v1/sources/${encodeURIComponent(source.id)}/playback/register`, {method: 'POST'});
+          const webrtc = (playback.streams || []).find(item => item.protocol === 'webrtc');
+          const hls = (playback.streams || []).find(item => item.protocol === 'hls');
+          if (webrtc && window.RTCPeerConnection) {
+            const peer = new RTCPeerConnection();
+            peerConnection = peer;
+            video.ontrack = event => { if (event.streams[0]) video.srcObject = event.streams[0]; };
+            peer.addTransceiver('video', {direction: 'recvonly'});
+            if (source.media_telemetry?.audioPresent === true) peer.addTransceiver('audio', {direction: 'recvonly'});
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            const answer = await fetch(webrtc.url, {method: 'POST', headers: {'content-type': 'application/sdp'}, body: offer.sdp});
+            if (!answer.ok) throw new Error(`WebRTC player could not connect (${answer.status}).`);
+            await peer.setRemoteDescription({type: 'answer', sdp: await answer.text()});
+            if (disposed) return;
+            setFeedback(status, 'Live stream connected.', 'success');
+          } else if (hls) {
+            video.src = hls.url;
+            await video.play();
+            setFeedback(status, 'Live stream connected.', 'success');
+          } else {
+            setFeedback(status, playback.error || 'No browser playback stream is available for this camera.', 'error');
+          }
+        } catch (error) {
+          if (peerConnection) peerConnection.close();
+          peerConnection = null;
+          setFeedback(status, error.message, 'error');
+        }
+        finally { button.disabled = false; }
+      });
+      const audio = element('button', 'button button-small', 'Unmute audio');
+      audio.type = 'button';
+      audio.disabled = source.media_telemetry?.audioPresent !== true;
+      audio.addEventListener('click', () => {
+        video.muted = !video.muted;
+        audio.textContent = video.muted ? 'Unmute audio' : 'Mute audio';
+        if (!video.muted) video.play().catch(() => {});
+      });
+      section.append(status, button, audio, video);
+      container.append(section);
+    }
+    function appendCaptureActions(container, source) {
+      const section = element('section', 'detail-section');
+      section.append(element('h3', '', 'Capture'));
+      const status = element('p', 'feedback');
+      const actions = element('div', 'button-row');
+      async function capture(path, body, label) {
+        try {
+          const result = await api(`/api/v1/sources/${encodeURIComponent(source.id)}/${path}`, {
+            method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body || {})
+          });
+          setFeedback(status, `${label} captured.`, 'success');
+          const link = element('a', 'button button-small', `Download ${label.toLowerCase()}`);
+          link.href = `/api/v1/media-artifacts/${encodeURIComponent(result.artifactId)}/content`;
+          link.target = '_blank';
+          actions.append(link);
+        } catch (error) { setFeedback(status, error.message, 'error'); }
+      }
+      const snapshot = element('button', 'button button-small', 'Capture snapshot');
+      snapshot.type = 'button';
+      snapshot.addEventListener('click', () => capture('snapshots', {}, 'Snapshot'));
+      const clip = element('button', 'button button-small', 'Capture 10-second clip');
+      clip.type = 'button';
+      clip.addEventListener('click', () => capture('clips', {duration_seconds: 10}, 'Clip'));
+      actions.append(snapshot, clip);
+      section.append(actions, status);
+      container.append(section);
+    }
+    function appendPtzControls(container, source) {
+      const ptz = source.capabilities.ptz;
+      const section = element('section', 'detail-section');
+      section.append(element('h3', '', 'Camera controls'));
+      const feedback = element('p', 'feedback');
+      const controls = element('div', 'button-row');
+      for (const [label, pan, tilt, zoom] of [['Up', 0, .5, 0], ['Left', -.5, 0, 0], ['Stop', 0, 0, 0], ['Right', .5, 0, 0], ['Down', 0, -.5, 0], ['Zoom in', 0, 0, .5], ['Zoom out', 0, 0, -.5]]) {
+        const button = element('button', 'button button-small', label);
+        button.type = 'button';
+        button.disabled = (pan !== 0 && !ptz.pan) || (tilt !== 0 && !ptz.tilt) || (zoom !== 0 && !ptz.zoom);
+        button.addEventListener('click', async () => {
+          try {
+            await api(`/api/v1/sources/${encodeURIComponent(source.id)}/ptz/move`, {
+              method: 'POST', headers: {'content-type': 'application/json'},
+              body: JSON.stringify({mode: 'continuous', pan, tilt, zoom})
+            });
+            setFeedback(feedback, `${label} command sent.`, 'success');
+          } catch (error) { setFeedback(feedback, error.message, 'error'); }
+        });
+        controls.append(button);
+      }
+      section.append(controls, feedback);
+      container.append(section);
+    }
+
+    function renderOverviewCameraList() {
+      const list = document.querySelector('#overview-cameras');
+      list.replaceChildren();
+      const sources = state.sources.filter(source => sourceKind(source) !== 'synthetic');
+      if (!sources.length) {
+        list.append(element('p', 'help', 'No cameras have been added.'));
+        return;
+      }
+      for (const source of sources) {
+        const item = element('div', 'device-item');
+        const info = element('div');
+        info.append(element('h3', '', formatName(source)), element('p', '', `${connectionLabel(source)} · ${streamLabel(source)}`));
+        const open = element('button', 'button button-small', 'View');
+        open.type = 'button';
+        open.addEventListener('click', () => { setView('cameras'); openCameraDetails(source); });
+        item.append(info, open);
+        list.append(item);
+      }
+    }
+    function renderOverview() {
+      if (!state.version || !state.status) return;
+      const cameras = state.sources.filter(source => sourceKind(source) !== 'synthetic');
+      const active = cameras.filter(isRunning).length;
+      const offline = cameras.filter(source => connectionLabel(source) === 'Offline').length;
+      const activeStreams = state.sources.filter(source => isRunning(source) && Number(source.frames_received || source.frames_generated || 0) > 0).length;
+      const stats = document.querySelector('#camera-stats');
+      stats.replaceChildren();
+      [['Cameras', cameras.length], ['Active', active], ['Disconnected', offline], ['Active streams', activeStreams]].forEach(([label, value]) => {
+        const card = element('div', 'stat');
+        card.append(element('span', 'stat-label', label), element('strong', 'stat-value', value));
+        stats.append(card);
+      });
+      const summary = document.querySelector('#streamer-summary');
+      summary.replaceChildren();
+      for (const [label, value] of [
+        ['Name', state.version.name || 'Sentinel Streaming'],
+        ['Instance', state.version.instanceId || 'Local streamer'],
+        ['Service', state.status.runtime?.shutting_down ? 'Shutting down' : state.status.runtime?.http_started ? 'Online' : 'Starting'],
+        ['Uptime', `${state.status.metrics?.uptime_seconds || 0} seconds`],
+        ['AI Vision', state.status.vision?.running ? 'Processing active stream' : state.status.vision?.enabled ? 'Enabled, waiting for stream' : 'Off']
+      ]) summary.append(element('dt', '', label), element('dd', '', value));
+      renderOverviewAlerts();
+      renderOverviewCameraList();
+      const badge = document.querySelector('#service-status');
+      badge.textContent = 'Online';
+      badge.className = 'service-status is-good';
+    }
+    function renderOverviewAlerts() {
+      const list = document.querySelector('#overview-alerts');
+      list.replaceChildren();
+      const alerts = [];
+      for (const source of state.sources) {
+        if (sourceKind(source) === 'synthetic') continue;
+        if (connectionLabel(source) === 'Offline') alerts.push({source: formatName(source), message: source.last_validation_failure?.message || 'Camera is disconnected.'});
+      }
+      for (const event of state.events) {
+        const kind = normalized(event.event_type || event.kind);
+        if (/fail|error|unhealthy|disconnect|exhaust/.test(kind)) alerts.push({source: event.source_id || 'Streamer', message: event.summary || event.message || kind});
+      }
+      if (!alerts.length) {
+        list.append(element('p', 'help', 'No recent camera errors.'));
+        return;
+      }
+      for (const alert of alerts.slice(0, 8)) {
+        const item = element('div', 'alert-item');
+        item.append(element('span', 'status is-warn', 'Attention'), element('p', '', `${alert.source}: ${alert.message}`));
+        list.append(item);
+      }
+    }
+    async function loadOverview() {
+      const [version, status, events] = await Promise.all([
+        api('/api/v1/version'), api('/api/v1/status'), api('/api/v1/events').catch(() => [])
+      ]);
+      state.version = version;
+      state.status = status;
+      state.events = Array.isArray(events) ? events : [];
+      renderOverview();
+    }
+
+    function renderVisionCameraList() {
+      const list = document.querySelector('#vision-camera-list');
+      if (!list || !state.vision) return;
+      list.replaceChildren();
+      const cameras = state.sources.filter(source => sourceKind(source) !== 'synthetic');
+      if (!cameras.length) {
+        list.append(element('p', 'help', 'Add a camera to configure its AI processing.'));
+        return;
+      }
+      for (const source of cameras) {
+        const item = element('div', 'camera-vision-row');
+        const info = element('div');
+        info.append(element('strong', '', formatName(source)), element('p', 'help', isRunning(source) ? 'Current active stream' : 'Start this camera before enabling analysis.'));
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.checked = Boolean(state.vision.settings.enabled && isRunning(source));
+        toggle.disabled = !isRunning(source);
+        toggle.setAttribute('aria-label', `Enable AI Vision for ${formatName(source)}`);
+        toggle.addEventListener('change', async () => {
+          toggle.disabled = true;
+          try {
+            const settings = {...state.vision.settings, enabled: toggle.checked};
+            await api('/api/v1/vision/config', {method: 'PUT', headers: {'content-type': 'application/json'}, body: JSON.stringify(settings)});
+            await loadVision();
+            setFeedback(document.querySelector('#vision-feedback'), 'AI Vision setting updated for the active camera.', 'success');
+          } catch (error) {
+            toggle.checked = !toggle.checked;
+            setFeedback(document.querySelector('#vision-feedback'), error.message, 'error');
+          } finally { toggle.disabled = !isRunning(source); }
+        });
+        const label = element('label', 'toggle');
+        label.append(toggle, element('span', '', state.vision.settings.enabled && isRunning(source) ? 'On' : 'Off'));
+        item.append(info, label);
+        list.append(item);
+      }
+    }
+    function renderLatestObservation(analysis) {
+      const target = document.querySelector('#latest-observation');
+      target.replaceChildren();
+      if (!analysis) {
+        target.append(element('p', 'help', 'No scene observations yet.'));
+        return;
+      }
+      const entry = element('article', 'observation');
+      entry.append(element('p', '', analysis.summary || 'Observation received.'));
+      for (const [label, values] of [['Changes', analysis.changes], ['Activities', analysis.activities], ['Objects', analysis.objects]]) {
+        if (Array.isArray(values) && values.length) entry.append(element('p', 'help', `${label}: ${values.join(', ')}`));
+      }
+      target.append(entry);
+    }
+    async function loadVision() {
+      const [vision] = await Promise.all([
+        api('/api/v1/vision/config')
+      ]);
+      state.vision = vision;
+      const status = state.status || await api('/api/v1/status');
+      state.status = status;
+      const summary = status.vision || {};
+      const metrics = summary.metrics || {};
+      document.querySelector('#vision-health').textContent =
+        `${summary.running ? 'Processing active stream' : summary.enabled ? 'Enabled; waiting for active stream' : 'AI Vision off'} · API key ${summary.credentialConfigured ? 'configured' : 'not configured'} · ${metrics.failures || 0} failed analyses · ${metrics.rate_limits || 0} rate limits`;
+      const form = document.querySelector('#vision-form');
+      form.elements.enabled.checked = Boolean(vision.settings.enabled);
+      form.elements.model.value = vision.settings.model || 'gpt-5.4-mini';
+      form.elements.intervalSeconds.value = vision.settings.intervalSeconds || 5;
+      form.elements.frames.value = vision.settings.frames || 5;
+      form.elements.spacingSeconds.value = vision.settings.spacingSeconds || 2;
+      renderVisionCameraList();
+      const response = await fetch('/api/v1/vision/latest');
+      if (response.ok) renderLatestObservation(await response.json());
+      else renderLatestObservation(null);
+    }
+    document.querySelector('#vision-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const feedback = document.querySelector('#vision-feedback');
+      const settings = {
+        enabled: form.elements.enabled.checked, model: form.elements.model.value.trim(),
+        intervalSeconds: Number(form.elements.intervalSeconds.value), frames: Number(form.elements.frames.value),
+        spacingSeconds: Number(form.elements.spacingSeconds.value)
+      };
+      try {
+        await api('/api/v1/vision/config', {method: 'PUT', headers: {'content-type': 'application/json'}, body: JSON.stringify(settings)});
+        setFeedback(feedback, 'AI Vision settings saved for this run.', 'success');
+        await loadVision();
+        await loadSources();
+      } catch (error) { setFeedback(feedback, error.message, 'error'); }
+    });
+
+    function renderSettings() {
+      const config = state.config || {};
+      const version = state.version || {};
+      const streamer = document.querySelector('#settings-streamer');
+      streamer.replaceChildren();
+      row(streamer, 'Instance name', version.name || 'Sentinel Streaming');
+      row(streamer, 'Instance ID', version.instanceId || '—');
+      row(streamer, 'Deployment profile', version.deploymentProfile || '—');
+      row(streamer, 'Bind address', config.bind || '—');
+      row(streamer, 'Frame rate target', config.fps ? `${config.fps} fps` : 'Not configured');
+      row(streamer, 'Buffer', config.buffer?.enabled ? `Enabled (${config.buffer.capacity} frames)` : 'Disabled');
+      const discovery = document.querySelector('#settings-discovery');
+      discovery.replaceChildren();
+      row(discovery, 'ONVIF discovery', 'Available on the local network');
+      row(discovery, 'Camera advertisement', 'Not provided by this runtime');
+      row(discovery, 'Camera setup', 'Discovery and RTSP registration');
+      const security = document.querySelector('#settings-security');
+      security.replaceChildren();
+      row(security, 'Access mode', version.securityMode || 'Unknown');
+      row(security, 'Authentication', version.securityMode === 'OPEN_LOCAL_TEST' ? 'Disabled for local testing' : 'Required');
+      const media = document.querySelector('#settings-media');
+      media.replaceChildren();
+      if (state.media) {
+        const configured = config.media_gateway?.enabled;
+        const health = normalized(state.media.health);
+        row(media, 'Gateway', configured === false ? 'Disabled' : `${state.media.kind || 'Media gateway'} · ${health || 'status unknown'}`);
+        row(media, 'Playback', health === 'healthy' ? 'Available' : state.media.detail || 'Not available');
+      } else {
+        row(media, 'Gateway', 'Status unavailable');
+      }
+      document.querySelector('#configuration-output').textContent = JSON.stringify(config, null, 2);
+      document.querySelector('#diagnostics-output').textContent = JSON.stringify(state.status?.health || [], null, 2);
+    }
+    async function loadSettings() {
+      const [config, media] = await Promise.all([
+        api('/api/v1/config'),
+        api('/api/v1/media-gateway/health').catch(() => null)
+      ]);
+      state.config = config;
+      state.media = media;
+      if (!state.version) state.version = await api('/api/v1/version');
+      if (!state.status) state.status = await api('/api/v1/status');
+      renderSettings();
+    }
+    document.querySelector('#support-bundle').addEventListener('click', async () => {
+      const feedback = document.querySelector('#support-feedback');
+      try {
+        const response = await fetch('/api/v1/support/bundle');
+        if (!response.ok) throw new Error(`Support bundle unavailable (${response.status})`);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = element('a');
+        link.href = url;
+        link.download = 'sentinel-support.json';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setFeedback(feedback, 'Downloaded. Review the bundle before sharing.', 'success');
+      } catch (error) { setFeedback(feedback, error.message, 'error'); }
+    });
+
+    function discoveryError(error) {
+      const data = error.data || {};
+      const code = normalized(data.code);
+      if (code.includes('unsupported') || error.status === 501) return ['Discovery unsupported', 'This streamer or network does not support ONVIF discovery. Try manual RTSP setup.'];
+      if (code.includes('permission') || error.status === 403) return ['Permission problem', 'The streamer was not allowed to scan the network. Check local network permissions and try again.'];
+      if (code.includes('timeout') || error.status === 408) return ['Discovery timed out', 'No ONVIF camera answered before the search timed out. This does not rule out cameras that do not support ONVIF.'];
+      if (code.includes('network') || code.includes('unreachable') || error.status >= 500) return ['Network error', 'The camera network could not be reached. Check that the streamer and camera are on the same network.'];
+      return ['Discovery failed', data.message || data.error || error.message || 'Camera discovery could not be completed.'];
+    }
+    function renderDiscoveryResults(session) {
+      const list = document.querySelector('#discovery-results');
+      list.replaceChildren();
+      if (!session.devices || session.devices.length === 0) {
+        const statePanel = element('div', 'state-message');
+        statePanel.append(element('strong', '', 'No ONVIF cameras discovered'), element('span', '', 'This search found no ONVIF-compatible cameras. It does not mean no cameras are connected. Try another network or use manual RTSP setup.'));
+        list.append(statePanel);
+        return;
+      }
+      for (const device of session.devices) {
+        const item = element('article', 'device-item');
+        const info = element('div');
+        const title = `${device.manufacturer || 'Network camera'}${device.model ? ` ${device.model}` : ''}`;
+        info.append(element('h3', '', title));
+        const capabilities = device.capabilities;
+        const supports = capabilities ? [
+          capabilities.video && 'Video',
+          capabilities.audio && 'Audio',
+          capabilities.ptz?.supported && 'PTZ'
+        ].filter(Boolean).join(' · ') : '';
+        info.append(element('p', '', `${device.profiles?.length || 0} video profiles${supports ? ` · ${supports}` : ''}`));
+        const select = element('button', 'button button-small', 'Set up');
+        select.type = 'button';
+        select.addEventListener('click', () => showDeviceSetup(session, device, item));
+        item.append(info, select);
+        list.append(item);
+      }
+    }
+    function renderChecks(checks) {
+      const list = element('ul', 'check-list');
+      for (const check of checks || []) {
+        const item = element('li', normalized(check.state), `${check.id.replaceAll('_', ' ')}: ${check.message}`);
+        list.append(item);
+      }
+      return list;
+    }
+    function showDeviceSetup(session, device, item) {
+      const detail = element('div', 'device-detail');
+      const fields = element('div', 'credential-fields');
+      const usernameLabel = element('label', '', 'Username (if required)');
+      const username = element('input');
+      username.autocomplete = 'off';
+      usernameLabel.append(username);
+      const passwordLabel = element('label', '', 'Password (if required)');
+      const password = element('input');
+      password.type = 'password';
+      password.autocomplete = 'new-password';
+      passwordLabel.append(password);
+      fields.append(usernameLabel, passwordLabel);
+      const inspect = element('button', 'button button-primary button-small', 'Verify camera');
+      inspect.type = 'button';
+      const feedback = element('p', 'feedback');
+      feedback.setAttribute('role', 'status');
+      detail.append(fields, inspect, feedback);
+      item.append(detail);
+      inspect.addEventListener('click', async () => {
+        inspect.disabled = true;
+        setFeedback(feedback, 'Checking camera connection and capabilities…');
+        try {
+          session = await api(`/api/v1/onboarding/sessions/${encodeURIComponent(session.session_id)}/inspect`, {
+            method: 'POST', headers: {'content-type': 'application/json'},
+            body: JSON.stringify({endpoint: device.address, username: username.value || null, password: password.value || null})
+          });
+          password.value = '';
+          detail.replaceChildren(fields, renderChecks(session.checks));
+          if (session.failure) {
+            setFeedback(feedback, session.failure.message || 'Camera verification failed.', 'error');
+            detail.append(feedback);
+            return;
+          }
+          if (!session.selected_profile) {
+            setFeedback(feedback, 'Camera responded, but no usable video profile was found.', 'error');
+            detail.append(feedback);
+            return;
+          }
+          const nameLabel = element('label', '', 'Camera name');
+          const nameInput = element('input');
+          nameInput.required = true;
+          nameInput.maxLength = 120;
+          nameInput.value = session.selected_device?.model || 'Network camera';
+          nameLabel.append(nameInput);
+          const save = element('button', 'button button-primary button-small', 'Save camera');
+          save.type = 'button';
+          save.addEventListener('click', async () => {
+            save.disabled = true;
+            try {
+              const id = `camera-${Date.now()}`;
+              const result = await api(`/api/v1/onboarding/sessions/${encodeURIComponent(session.session_id)}/complete`, {
+                method: 'POST', headers: {'content-type': 'application/json'},
+                body: JSON.stringify({source_id: id, name: nameInput.value.trim(), location: null})
+              });
+              if (!result.success) throw new Error(result.failure?.message || 'Camera setup did not complete.');
+              setFeedback(feedback, 'Camera saved and verified. Start it from Cameras to view the live feed.', 'success');
+              save.disabled = false;
+              await loadSources();
+            } catch (error) {
+              setFeedback(feedback, error.message, 'error');
+              save.disabled = false;
+            }
+          });
+          detail.append(nameLabel, save, feedback);
+          setFeedback(feedback, `Verified ${session.selected_profile.name || 'a video profile'}.`, 'success');
+        } catch (error) {
+          const [title, message] = discoveryError(error);
+          setFeedback(feedback, `${title}: ${message}`, 'error');
+        } finally { inspect.disabled = false; }
+      });
+    }
+    document.querySelector('#discovery-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const button = document.querySelector('#discover-button');
+      const progress = document.querySelector('#discovery-progress');
+      const results = document.querySelector('#discovery-results');
+      const statePanel = document.querySelector('#discovery-state');
+      button.disabled = true;
+      results.replaceChildren();
+      setFeedback(progress, 'Searching for ONVIF cameras…');
+      setFeedback(statePanel, '');
+      try {
+        const addressValue = form.elements.address.value.trim();
+        const session = await api('/api/v1/onboarding/discover', {
+          method: 'POST', headers: {'content-type': 'application/json'},
+          body: JSON.stringify({address: addressValue || null, timeout_ms: Number(form.elements.timeout.value)})
+        });
+        setFeedback(progress, '');
+        setFeedback(statePanel, session.devices?.length ? `${session.devices.length} camera${session.devices.length === 1 ? '' : 's'} found.` : 'Search completed.');
+        renderDiscoveryResults(session);
+      } catch (error) {
+        setFeedback(progress, '');
+        const [title, message] = discoveryError(error);
+        const item = element('div', 'state-message');
+        item.append(element('strong', '', title), element('span', '', message));
+        results.replaceChildren(item);
+      } finally { button.disabled = false; }
+    });
+    document.querySelector('#manual-source-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const feedback = document.querySelector('#manual-source-feedback');
+      const values = new FormData(form);
+      const uri = String(values.get('uri') || '').trim();
+      let parsedUri;
+      try { parsedUri = new URL(uri); }
+      catch {
+        setFeedback(feedback, 'Enter a valid RTSP address.', 'error');
+        return;
+      }
+      if (parsedUri.protocol !== 'rtsp:' || parsedUri.username || parsedUri.password) {
+        setFeedback(feedback, 'Use an RTSP address without embedded credentials. Enter credentials separately.', 'error');
+        return;
+      }
+      const credentials = values.get('username') || values.get('password')
+        ? {username: values.get('username') || null, password: values.get('password') || null} : null;
+      const source = {
+        id: String(values.get('id') || '').trim(),
+        kind: 'rtsp',
+        name: String(values.get('name') || '').trim(),
+        uri,
+        transport: 'tcp',
+        credentials
+      };
+      try {
+        await api('/api/v1/sources', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(source)});
+        setFeedback(feedback, 'Camera added. Start it from Cameras to begin streaming.', 'success');
+        form.reset();
+        await loadSources();
+        setView('cameras');
+      } catch (error) { setFeedback(feedback, error.message, 'error'); }
+    });
+
+    async function refreshData() {
+      const feedback = document.querySelector('#app-feedback');
+      try {
+        const [version, status, sources, events, vision] = await Promise.all([
+          api('/api/v1/version'), api('/api/v1/status'), api('/api/v1/sources'),
+          api('/api/v1/events').catch(() => []), api('/api/v1/vision/config')
+        ]);
+        state.version = version;
+        state.status = status;
+        state.sources = Array.isArray(sources) ? sources : [];
+        state.events = Array.isArray(events) ? events : [];
+        state.vision = vision;
+        document.querySelector('#service-status').textContent = 'Online';
+        document.querySelector('#service-status').className = 'service-status is-good';
+        document.querySelector('#auth-panel').hidden = version.securityMode === 'OPEN_LOCAL_TEST';
+        renderCameras();
+        renderOverview();
+        await loadVision();
+        setFeedback(feedback, '');
+      } catch (error) {
+        document.querySelector('#service-status').textContent = 'Unavailable';
+        document.querySelector('#service-status').className = 'service-status is-bad';
+        if (state.version?.securityMode !== 'OPEN_LOCAL_TEST') {
+          document.querySelector('#auth-panel').hidden = false;
+          setFeedback(document.querySelector('#auth-status'), error.message, 'error');
+        } else showPageError(error);
+      }
+    }
+    document.querySelector('#auth-login').addEventListener('click', async () => {
+      const candidate = document.querySelector('#auth-token').value;
+      authToken = candidate;
+      try {
+        await api('/api/v1/auth/whoami');
+        sessionStorage.setItem('sentinel_access_token', authToken);
+        setFeedback(document.querySelector('#auth-status'), 'Signed in.', 'success');
+        await refreshData();
+      } catch {
+        authToken = '';
+        sessionStorage.removeItem('sentinel_access_token');
+        setFeedback(document.querySelector('#auth-status'), 'Sign-in failed. Check the administrator token.', 'error');
+      }
+    });
+    document.querySelector('#overview-refresh').addEventListener('click', () => refreshData());
+    async function loadSettings() {
+      try {
+        state.config = await api('/api/v1/config');
+        state.media = await api('/api/v1/media-gateway/health').catch(() => null);
+        renderSettings();
+      } catch (error) { showPageError(error); }
+    }
+    setInterval(() => {
+      if (document.visibilityState === 'visible') refreshData();
+    }, 10000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') refreshData();
+    });
+    refreshData().then(loadSettings).catch(showPageError);
+  </script>
+</body>
+</html>
