@@ -26,6 +26,12 @@ pub struct Config {
     pub metrics: MetricsConfig,
 }
 
+impl Config {
+    pub fn vision_enabled(&self) -> bool {
+        self.pipeline.vision && self.vision.enabled
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct SecurityConfig {
     pub mode: SecurityMode,
@@ -42,7 +48,7 @@ pub enum SecurityMode {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            mode: SecurityMode::OpenLocalTest,
+            mode: SecurityMode::LocalAdminAuth,
         }
     }
 }
@@ -156,6 +162,12 @@ pub(crate) fn redact_uri_for_debug(value: &str) -> String {
             if !url.username().is_empty() {
                 let _ = url.set_username("[REDACTED]");
                 let _ = url.set_password(Some("[REDACTED]"));
+            }
+            if url.query().is_some() {
+                url.set_query(Some("[REDACTED]"));
+            }
+            if url.fragment().is_some() {
+                url.set_fragment(Some("[REDACTED]"));
             }
             url.to_string()
         })
@@ -1125,6 +1137,14 @@ mod tests {
         let config = Config::load(&path, None, None).unwrap();
         assert_eq!(config.security.mode, SecurityMode::LocalAdminAuth);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authenticated_mode_is_the_default() {
+        assert_eq!(
+            Config::default().security.mode,
+            SecurityMode::LocalAdminAuth
+        );
     }
 
     #[test]

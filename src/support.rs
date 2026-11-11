@@ -116,6 +116,12 @@ fn sanitize_string(value: &str) -> String {
                 let _ = parsed.set_username("[REDACTED]");
                 let _ = parsed.set_password(Some("[REDACTED]"));
             }
+            if parsed.query().is_some() {
+                parsed.set_query(Some("[REDACTED]"));
+            }
+            if parsed.fragment().is_some() {
+                parsed.set_fragment(Some("[REDACTED]"));
+            }
             parsed.to_string()
         })
         .unwrap_or_else(|_| value.into())
@@ -124,6 +130,14 @@ fn sanitize_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitizes_url_query_and_fragment() {
+        let value = sanitize_value(serde_json::json!({
+            "url": "rtsp://example.test/stream?private=value#private"
+        }));
+        assert!(!value.to_string().contains("private"));
+    }
 
     #[test]
     fn sanitizes_secret_keys_and_embedded_url_credentials() {

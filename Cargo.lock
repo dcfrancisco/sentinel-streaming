@@ -1714,6 +1714,7 @@ dependencies = [
  "base64",
  "clap",
  "dirs",
+ "httpdate",
  "image",
  "keyring",
  "libc",

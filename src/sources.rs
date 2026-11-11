@@ -905,6 +905,7 @@ pub struct VideoSourceManager {
     rtsp: Arc<RwLock<Option<CameraWorker>>>,
     mjpeg: Arc<RwLock<Option<CameraWorker>>>,
     active_source: Arc<RwLock<Option<String>>>,
+    lifecycle: Arc<Mutex<()>>,
     events: EventBus,
     reconnect: ReconnectConfig,
     shutdown: watch::Receiver<bool>,
@@ -1096,6 +1097,7 @@ impl VideoSourceManager {
             rtsp: Arc::new(RwLock::new(None)),
             mjpeg: Arc::new(RwLock::new(None)),
             active_source: Arc::new(RwLock::new(None)),
+            lifecycle: Arc::new(Mutex::new(())),
             events,
             reconnect,
             shutdown,
@@ -2612,6 +2614,14 @@ impl VideoSourceManager {
     }
 
     pub async fn start(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
+        let _guard = self.lifecycle.lock().await;
+        self.start_locked(id).await
+    }
+
+    async fn start_locked(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
+        if self.worker(id).await.is_some() {
+            return self.get(id).await;
+        }
         let (kind, options) = {
             let mut sources = self.sources.write().await;
             let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
@@ -2619,14 +2629,12 @@ impl VideoSourceManager {
             entry.info.status = SourceState::Starting;
             (entry.info.kind.clone(), entry.options.clone())
         };
-        if self.worker(id).await.is_some() {
-            return self.get(id).await;
-        }
         // The current pipeline has one FrameProvider stream. Switching sources
         // therefore stops the previous active worker before selecting the new one.
-        if let Some(active) = self.active_source.read().await.clone() {
+        let active = self.active_source.read().await.clone();
+        if let Some(active) = active {
             if active != id {
-                let _ = self.stop(&active).await;
+                self.stop_locked(&active).await?;
             }
         }
         let worker = match kind.as_str() {
@@ -2695,15 +2703,21 @@ impl VideoSourceManager {
         }
     }
     pub async fn stop(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
+        let _guard = self.lifecycle.lock().await;
+        self.stop_locked(id).await
+    }
+
+    async fn stop_locked(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
         let mut sources = self.sources.write().await;
         let entry = sources.get_mut(id).ok_or(SourceManagerError::NotFound)?;
         entry.info.status = SourceState::Stopping;
         entry.desired_running = false;
         drop(sources);
-        if let Some(worker) = self.take_worker(id).await {
-            worker.stop();
-        }
-        if self.active_source.read().await.as_deref() == Some(id) {
+        let is_active = self.active_source.read().await.as_deref() == Some(id);
+        if is_active {
+            if let Some(worker) = self.take_worker(id).await {
+                worker.stop();
+            }
             *self.active_source.write().await = None;
         }
         let mut sources = self.sources.write().await;
@@ -2735,8 +2749,9 @@ impl VideoSourceManager {
         }
     }
     pub async fn restart(&self, id: &str) -> Result<SourceInfo, SourceManagerError> {
-        self.stop(id).await.ok();
-        let result = self.start(id).await?;
+        let _guard = self.lifecycle.lock().await;
+        self.stop_locked(id).await?;
+        let result = self.start_locked(id).await?;
         self.events.publish(Event {
             kind: "source_restarted".into(),
             source_id: Some(id.into()),
@@ -2745,7 +2760,8 @@ impl VideoSourceManager {
         Ok(result)
     }
     pub async fn remove(&self, id: &str) -> Result<(), SourceManagerError> {
-        self.stop(id).await?;
+        let _guard = self.lifecycle.lock().await;
+        self.stop_locked(id).await?;
         let is_rtsp = self
             .sources
             .read()
@@ -2963,7 +2979,19 @@ impl VideoSourceManager {
                 _ = tokio::time::sleep(wait) => {}
                 changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { return false; } }
             }
-            match self.start(id).await {
+            let _guard = self.lifecycle.lock().await;
+            let desired = self
+                .sources
+                .read()
+                .await
+                .get(id)
+                .map(|entry| entry.desired_running)
+                .unwrap_or(false);
+            if !desired || *shutdown.borrow() {
+                return false;
+            }
+            let result = self.start_locked(id).await;
+            match result {
                 Ok(_) => {
                     self.recovery
                         .recovered("camera", started, "source recovered")
@@ -3032,6 +3060,17 @@ impl VideoSourceManager {
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
                 changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { return false; } }
+            }
+            let _guard = self.lifecycle.lock().await;
+            let desired = self
+                .sources
+                .read()
+                .await
+                .get("builtin")
+                .map(|entry| entry.desired_running)
+                .unwrap_or(false);
+            if !desired || *shutdown.borrow() {
+                return false;
             }
             let fps = self.fps;
             let result = tokio::task::spawn_blocking(move || CameraWorker::start(fps)).await;
@@ -3220,6 +3259,60 @@ mod onvif_handoff_tests {
         OnvifInspection, PtzCapabilities,
     };
     use async_trait::async_trait;
+
+    #[tokio::test]
+    async fn stopping_source_during_reconnect_does_not_restart_it() {
+        let events = EventBus::new(8);
+        let recovery = RecoveryEngine::new(events.clone());
+        let (shutdown, receiver) = watch::channel(false);
+        let reconnect = ReconnectConfig {
+            initial_delay_ms: 200,
+            jitter: false,
+            ..Default::default()
+        };
+        let manager = VideoSourceManager::new(10, events, reconnect, receiver, recovery.clone());
+        manager
+            .add(AddSource {
+                id: "retry-source".into(),
+                kind: "synthetic".into(),
+                options: SourceOptions {
+                    width: Some(16),
+                    height: Some(12),
+                    ..Default::default()
+                },
+            })
+            .await
+            .unwrap();
+        manager.start("retry-source").await.unwrap();
+        let retrying = manager.clone();
+        let task = tokio::spawn(async move {
+            retrying
+                .reconnect_virtual_until_running("retry-source")
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if recovery.monitor.state("camera").await
+                    == Some(crate::recovery::ComponentState::Recovering)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        manager.stop("retry-source").await.unwrap();
+        assert!(!tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap());
+        assert!(matches!(
+            manager.get("retry-source").await.unwrap().status,
+            SourceState::Stopped
+        ));
+        shutdown.send(true).unwrap();
+    }
 
     struct SuccessfulRtsp;
     #[async_trait]

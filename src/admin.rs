@@ -6,18 +6,33 @@ pub const INDEX: &str = r##"<!doctype html>
   <title>Sentinel Streaming Admin</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    body { background: #101418; color: #eef2f5; margin: 0; padding: 2rem; }
-    main { max-width: 900px; margin: auto; }
+    body { background: #101418; color: #eef2f5; margin: 0; display: flex; min-height: 100vh; }
+    nav { width: 200px; flex-shrink: 0; padding: 2rem 1rem; background: #171e25; }
+    nav a { display: block; color: #b8c8d6; padding: .6rem; }
+    main { max-width: 1100px; width: 100%; margin: auto; padding: 2rem; box-sizing: border-box; }
     article { background: #1b2229; border: 1px solid #303b45; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
     button { background: #4f9cf9; border: 0; border-radius: 6px; color: white; cursor: pointer; padding: .55rem .8rem; }
+    button + button { margin-left: .4rem; }
+    input, select { background: #101418; color: #eef2f5; border: 1px solid #536474; border-radius: 4px; padding: .55rem; margin: .25rem; }
+    label { display: inline-block; margin: .3rem; }
     button:disabled { cursor: wait; opacity: .6; }
     dl { display: grid; grid-template-columns: 180px 1fr; gap: .35rem 1rem; }
     dt { color: #9fb0bf; } dd { margin: 0; }
     pre { white-space: pre-wrap; color: #b8c8d6; }
     .healthy { color: #73d99a; } .unhealthy, .failed { color: #ff8f8f; }
+    img { max-width: 100%; }
+    @media (max-width: 700px) { body { display: block; } nav { width: auto; padding: .5rem; } nav a { display: inline-block; } main { padding: 1rem; } dl { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
+<nav aria-label="Administration">
+  <strong>Sentinel Streaming</strong>
+  <a href="#dashboard">Dashboard</a>
+  <a href="#camera-setup">Cameras</a>
+  <a href="#vision">AI Vision</a>
+  <a href="#events">Events</a>
+  <a href="#diagnostics">Diagnostics</a>
+</nav>
 <main>
   <h1>Sentinel Streaming Admin</h1>
   <p>RTSP source validation, stream health, and ONVIF capability inspection.</p>
@@ -25,30 +40,73 @@ pub const INDEX: &str = r##"<!doctype html>
   <section id="auth-panel">
     <h2>Sign in</h2>
     <p>Use the administrator/operator/viewer token configured for this installation. First-run deployments may use the explicitly configured bootstrap token.</p>
-    <input id="auth-token" type="password" autocomplete="current-password" placeholder="Access token">
+    <input id="auth-token" type="password" autocomplete="current-password" placeholder="Access token" aria-label="Access token">
     <button id="auth-login">Sign in</button>
+    <button id="auth-logout">Sign out</button>
     <span id="auth-status"></span>
   </section>
-  <section>
+  <section id="dashboard">
+    <h2>Dashboard</h2>
+    <p id="dashboard-status">Loading service status...</p>
+    <dl id="dashboard-metrics"></dl>
+    <button id="refresh-overview">Refresh overview</button>
+  </section>
+  <section id="camera-setup">
     <h2>Add camera</h2>
     <p>Find a camera, verify it, preview it, and save it without entering RTSP or ONVIF details.</p>
     <button id="discover">Find cameras</button>
     <div id="discovered"></div>
+    <details>
+      <summary>Advanced: add a source manually</summary>
+      <form id="manual-source">
+        <label>Source ID <input name="id" required pattern="[A-Za-z0-9_-]+" maxlength="64"></label>
+        <label>Type <select name="kind"><option value="rtsp">RTSP</option><option value="built-in-camera">Built-in / USB</option><option value="synthetic">Synthetic</option></select></label>
+        <label>RTSP URL (no credentials) <input name="uri" placeholder="rtsp://camera/stream"></label>
+        <button type="submit">Add source</button>
+        <p id="manual-source-status" role="status"></p>
+      </form>
+    </details>
   </section>
   <section id="cameras"><p>Loading sources…</p></section>
+  <section id="vision">
+    <h2>AI Vision</h2><p id="vision-status">Loading vision status...</p>
+    <p>Changes apply to this process only and are lost on restart. The OpenAI key is configured outside the console.</p>
+    <form id="vision-form">
+      <label><input type="checkbox" name="enabled"> Enable vision</label>
+      <label>OpenAI model <input name="model" required maxlength="128" pattern="[A-Za-z0-9_.:-]+"></label>
+      <label>Interval (seconds) <input name="intervalSeconds" type="number" min="1" max="3600" required></label>
+      <label>Frames <input name="frames" type="number" min="1" max="10" required></label>
+      <label>Spacing (seconds) <input name="spacingSeconds" type="number" min="1" max="3600" required></label>
+      <button type="submit">Apply vision settings</button><span id="vision-form-status" role="status"></span>
+    </form>
+    <pre id="vision-latest"></pre>
+  </section>
+  <section id="events"><h2>Recent events</h2><p>In-memory history is bounded and resets on restart. Severity is not currently recorded.</p>
+    <label>Category <input id="event-category" placeholder="e.g. vision"></label>
+    <label>Source <input id="event-source" placeholder="Source ID"></label>
+    <div id="event-list">Loading events...</div>
+  </section>
+  <section id="diagnostics"><h2>Diagnostics</h2><p>Health and recent component failures are shown below. Support bundles do not include image data.</p><pre id="diagnostic-status">Loading diagnostics...</pre><button id="support-bundle">Download support bundle</button><p id="support-status" role="status"></p></section>
 </main>
 <script>
 const rawFetch = window.fetch.bind(window);
 let authToken = sessionStorage.getItem('sentinel_access_token') || '';
 window.fetch = (input, init = {}) => {
   const headers = new Headers(init.headers || {});
-  if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
+  const url = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+  if (authToken && url.origin === window.location.origin) headers.set('Authorization', `Bearer ${authToken}`);
   return rawFetch(input, {...init, headers});
 };
 const authStatus = document.querySelector('#auth-status');
 const securityMode = document.querySelector('#security-mode');
 const authPanel = document.querySelector('#auth-panel');
 document.querySelector('#auth-token').value = authToken;
+document.querySelector('#auth-logout').addEventListener('click', () => {
+  authToken = '';
+  sessionStorage.removeItem('sentinel_access_token');
+  document.querySelector('#auth-token').value = '';
+  window.location.reload();
+});
 document.querySelector('#auth-login').addEventListener('click', async () => {
   const candidate = document.querySelector('#auth-token').value;
   authToken = candidate;
@@ -63,9 +121,11 @@ document.querySelector('#auth-login').addEventListener('click', async () => {
   const identity = await response.json();
   authStatus.textContent = `Signed in as ${identity.principal?.id || 'authenticated user'}.`;
   await load();
+  await loadOverview();
 });
 const cameras = document.querySelector('#cameras');
 const discovered = document.querySelector('#discovered');
+const previewCleanup = new Set();
 function text(value) { return value == null ? '—' : String(value); }
 function capabilitySummary(capabilities) {
   if (!capabilities) return 'Not inspected';
@@ -175,6 +235,16 @@ document.querySelector('#discover').addEventListener('click', async (event) => {
   } finally { button.disabled = false; }
 });
 function render(sources) {
+  for (const cleanup of previewCleanup) cleanup();
+  previewCleanup.clear();
+  if (!Array.isArray(sources)) {
+    cameras.textContent = 'Camera inventory is unavailable. Sign in with an authorized account.';
+    return;
+  }
+  if (!sources.length) {
+    cameras.textContent = 'No cameras are registered.';
+    return;
+  }
   cameras.replaceChildren(...sources.map(source => {
     const card = document.createElement('article');
     const title = document.createElement('h2');
@@ -223,6 +293,66 @@ function render(sources) {
       } finally { button.disabled = false; }
     });
     card.append(title, details, button);
+    const operationStatus = document.createElement('p');
+    operationStatus.setAttribute('role', 'status');
+    for (const [label, operation, method] of [['Start', 'start', 'POST'], ['Stop', 'stop', 'POST'], ['Remove', '', 'DELETE']]) {
+      const action = document.createElement('button');
+      action.textContent = label;
+      action.addEventListener('click', async () => {
+        if (label === 'Remove' && !confirm(`Remove ${source.id}?`)) return;
+        action.disabled = true;
+        try {
+          const suffix = operation ? `/${operation}` : '';
+          const response = await fetch(`/api/v1/sources/${encodeURIComponent(source.id)}${suffix}`, {method});
+          if (!response.ok) {
+            const result = await response.json();
+            operationStatus.textContent = result.error || `${label} failed (${response.status}).`;
+            return;
+          }
+          await load();
+          await loadOverview();
+        } catch (error) {
+          operationStatus.textContent = `${label} failed: ${error.message}`;
+        } finally { action.disabled = false; }
+      });
+      card.append(action);
+    }
+    const preview = document.createElement('button');
+    preview.textContent = 'Start live preview';
+    const image = document.createElement('img');
+    image.alt = `Current frame from ${source.name || source.id}`;
+    image.hidden = true;
+    let active = false;
+    let timer;
+    function stopPreview() {
+      active = false;
+      clearTimeout(timer);
+      if (image.src.startsWith('blob:')) URL.revokeObjectURL(image.src);
+      image.hidden = true;
+      preview.textContent = 'Start live preview';
+    }
+    previewCleanup.add(stopPreview);
+    async function updatePreview() {
+      if (!active) return;
+      try {
+        const response = await fetch(`/api/v1/streams/${encodeURIComponent(source.id)}/frame`);
+        if (!response.ok) throw new Error(`Frame unavailable (${response.status})`);
+        const blob = await response.blob();
+        if (!active) return;
+        const old = image.src;
+        image.src = URL.createObjectURL(blob);
+        image.hidden = false;
+        if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+        timer = setTimeout(updatePreview, 1000);
+      } catch (error) { operationStatus.textContent = error.message; stopPreview(); }
+    }
+    preview.addEventListener('click', () => {
+      if (active) { stopPreview(); return; }
+      active = true;
+      preview.textContent = 'Stop live preview';
+      updatePreview();
+    });
+    card.append(preview, operationStatus, image);
     if (source.media_telemetry && source.media_telemetry.detail) {
       const mediaMessage = document.createElement('p');
       mediaMessage.className = source.media_telemetry.deliveryState === 'READY' ? 'healthy' : 'unhealthy';
@@ -358,8 +488,108 @@ function render(sources) {
 }
 async function load() {
   const response = await fetch('/api/v1/sources');
+  if (!response.ok) throw new Error(`Camera inventory unavailable (${response.status})`);
   render(await response.json());
 }
+document.querySelector('#manual-source').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.querySelector('#manual-source-status');
+  const values = new FormData(form);
+  const data = {id: values.get('id'), kind: values.get('kind')};
+  if (data.kind === 'rtsp') data.uri = values.get('uri');
+  try {
+    const response = await fetch('/api/v1/sources', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(data)});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+    status.textContent = 'Source registered for this runtime. Start it from the camera inventory.';
+    form.reset();
+    await load();
+  } catch (error) { status.textContent = error.message; }
+});
+async function loadOverview() {
+  const status = document.querySelector('#dashboard-status');
+  try {
+    const response = await fetch('/api/v1/status');
+    if (!response.ok) throw new Error(`Status unavailable (${response.status}); sign in with diagnostic access.`);
+    const result = await response.json();
+    status.textContent = `Service version ${result.version}; ${result.securityMode}.`;
+    const sourcesResponse = await fetch('/api/v1/sources');
+    const sources = sourcesResponse.ok ? await sourcesResponse.json() : null;
+    const activeSources = Array.isArray(sources) ? sources.filter(source => source.status === 'running').length : 'Unavailable';
+    const list = document.querySelector('#dashboard-metrics');
+    list.replaceChildren();
+    for (const [label, value] of [
+      ['Uptime', `${result.metrics.uptime_seconds} s`], ['Running sources', activeSources],
+      ['Frames per second', result.metrics.fps.toFixed(1)], ['Dropped frames', result.metrics.dropped_frames],
+      ['Memory', `${result.metrics.memory_bytes} bytes`], ['CPU', `${result.metrics.cpu_percent.toFixed(1)}%`],
+      ['Buffer', `${result.buffer.length} / ${result.buffer.capacity}`],
+      ['Active connections', 'Not measured'], ['Stream latency', 'Not measured']
+    ]) {
+      const dt = document.createElement('dt'); dt.textContent = label;
+      const dd = document.createElement('dd'); dd.textContent = value;
+      list.append(dt, dd);
+    }
+    const vision = result.vision;
+    document.querySelector('#vision-status').textContent =
+      `Effective state: ${vision.enabled ? (vision.running ? 'enabled' : 'enabled, not running') : 'disabled'}; credential ${vision.credentialConfigured ? 'configured' : 'not configured'}; model ${vision.model}; interval ${vision.intervalSeconds}s; frames ${vision.frames}; spacing ${vision.spacingSeconds}s. Analyses: ${vision.metrics.requests}; failures: ${vision.metrics.failures}; HTTP attempts: ${vision.metrics.http_attempts}; rate limits: ${vision.metrics.rate_limits}; average latency: ${vision.metrics.average_latency_ms == null ? 'unavailable' : vision.metrics.average_latency_ms + ' ms'}. Input/output tokens: ${vision.metrics.input_tokens == null ? 'unavailable' : vision.metrics.input_tokens + ' / ' + vision.metrics.output_tokens}.`;
+    const form = document.querySelector('#vision-form');
+    form.elements.enabled.checked = vision.enabled;
+    for (const name of ['model', 'intervalSeconds', 'frames', 'spacingSeconds']) form.elements[name].value = vision[name];
+    document.querySelector('#diagnostic-status').textContent = JSON.stringify(result.health, null, 2);
+    const latestResponse = await fetch('/api/v1/vision/latest');
+    document.querySelector('#vision-latest').textContent = latestResponse.ok ? JSON.stringify(await latestResponse.json(), null, 2) : 'No observation available.';
+    const eventsResponse = await fetch('/api/v1/events');
+    if (!eventsResponse.ok) throw new Error(`Events unavailable (${eventsResponse.status})`);
+    recentEvents = await eventsResponse.json();
+    renderEvents();
+  } catch (error) { status.textContent = error.message; }
+}
+let recentEvents = [];
+function renderEvents() {
+  const list = document.querySelector('#event-list');
+  const category = document.querySelector('#event-category').value.trim().toLowerCase();
+  const source = document.querySelector('#event-source').value.trim().toLowerCase();
+  const filtered = recentEvents.filter(item => item.event_type.toLowerCase().includes(category) && (item.source_id || '').toLowerCase().includes(source));
+  list.replaceChildren();
+  if (!filtered.length) list.textContent = 'No matching events.';
+  for (const item of filtered) {
+    const entry = document.createElement('p');
+    entry.textContent = `${new Date(Number(item.timestamp)).toLocaleString()} — ${item.event_type} — ${item.source_id || 'system'} — ${item.summary}`;
+    list.append(entry);
+  }
+}
+document.querySelector('#event-category').addEventListener('input', renderEvents);
+document.querySelector('#event-source').addEventListener('input', renderEvents);
+document.querySelector('#refresh-overview').addEventListener('click', loadOverview);
+document.querySelector('#vision-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.querySelector('#vision-form-status');
+  const settings = {enabled: form.elements.enabled.checked, model: form.elements.model.value,
+    intervalSeconds: Number(form.elements.intervalSeconds.value), frames: Number(form.elements.frames.value),
+    spacingSeconds: Number(form.elements.spacingSeconds.value)};
+  try {
+    const response = await fetch('/api/v1/vision/config', {method: 'PUT', headers: {'content-type': 'application/json'}, body: JSON.stringify(settings)});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+    status.textContent = 'Applied for this process; settings revert after restart.';
+    await loadOverview();
+  } catch (error) { status.textContent = error.message; }
+});
+document.querySelector('#support-bundle').addEventListener('click', async () => {
+  const status = document.querySelector('#support-status');
+  try {
+    const response = await fetch('/api/v1/support/bundle');
+    if (!response.ok) throw new Error(`Support bundle unavailable (${response.status})`);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = 'sentinel-support.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.textContent = 'Support bundle downloaded; review it before sharing.';
+  } catch (error) { status.textContent = error.message; }
+});
 async function loadSecurityMode() {
   const response = await rawFetch('/api/v1/version');
   if (!response.ok) return;
@@ -372,6 +602,7 @@ async function loadSecurityMode() {
 }
 loadSecurityMode().catch(() => { securityMode.textContent = 'Security mode: unavailable'; });
 load().catch(error => { cameras.textContent = `Unable to load sources: ${error.message}`; });
+loadOverview();
 </script>
 </body>
 </html>"##;

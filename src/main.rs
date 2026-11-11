@@ -7,7 +7,6 @@ use sentinel_streaming::{
     frame_buffer::FrameBuffer,
     logging,
     pipeline::Pipeline,
-    vision::{FrameSelector, OpenAiVisionProvider, VisionJob, VisionScheduler},
 };
 
 #[tokio::main]
@@ -137,7 +136,7 @@ async fn serve(
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     logging::init(&config.logging.level);
     tracing::info!("starting sentinel-streaming");
-    tracing::info!(config = ?config, "configuration loaded");
+    tracing::info!("configuration loaded and validated");
     let frame_buffer = FrameBuffer::new(config.buffer.capacity);
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let state = api::AppState::new(
@@ -185,28 +184,15 @@ async fn serve(
         .ready
         .store(true, std::sync::atomic::Ordering::Relaxed);
     tracing::info!("pipeline initialized");
-    let vision_task = if config.vision.enabled {
-        match OpenAiVisionProvider::from_env() {
-            Some(provider) => VisionScheduler::spawn(VisionJob {
-                buffer: frame_buffer.clone(),
-                state: state.vision.clone(),
-                metrics: state.vision_metrics.clone(),
-                selector: FrameSelector::new(config.vision.frames, config.vision.spacing_seconds),
-                interval_seconds: config.vision.interval_seconds,
-                shutdown: shutdown_tx.subscribe(),
-                events: state.events.clone(),
-                provider: std::sync::Arc::new(provider),
-                recovery: state.recovery.clone(),
-            }),
-            None => {
-                tracing::warn!("OpenAI Vision disabled; OPENAI_API_KEY is unavailable");
-                None
-            }
+    let (vision_settings, _) = state.vision_control.snapshot().await;
+    if vision_settings.enabled {
+        if let Err(error) = state.vision_control.apply(vision_settings, &state).await {
+            state.vision_metrics.configuration_failure();
+            state.recovery.failed("vision", error, 1).await;
         }
     } else {
         tracing::info!("vision disabled by configuration");
-        None
-    };
+    }
     let pipeline_state = state.clone();
     let pipeline_buffer = frame_buffer.clone();
     let pipeline_shutdown = shutdown_tx.clone();
@@ -246,18 +232,27 @@ async fn serve(
         }
     });
     let mut server_task = tokio::spawn(api::serve(state.clone(), shutdown_tx.subscribe()));
+    let mut server_result = None;
+    let mut pipeline_result = None;
     tokio::select! {
-        result = &mut server_task => { shutdown_tx.send(true).ok(); result??; }
-        result = &mut pipeline_task => { shutdown_tx.send(true).ok(); result?; }
+        result = &mut server_task => { shutdown_tx.send(true).ok(); server_result = Some(result); }
+        result = &mut pipeline_task => { shutdown_tx.send(true).ok(); pipeline_result = Some(result); }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("shutdown signal received");
             state.runtime.mark_shutting_down().await;
             shutdown_tx.send(true).ok();
         }
     }
+    state.vision_control.stop().await;
     state.sources.shutdown_sources().await;
-    let _ = server_task.await;
-    let _ = pipeline_task.await;
+    let server_result = match server_result {
+        Some(result) => result,
+        None => server_task.await,
+    };
+    let pipeline_result = match pipeline_result {
+        Some(result) => result,
+        None => pipeline_task.await,
+    };
     state.sources.shutdown_media_gateway().await;
     if let Some(task) = health_task {
         let _ = task.await;
@@ -265,9 +260,9 @@ async fn serve(
     if let Some(task) = media_supervision_task {
         let _ = task.await;
     }
-    if let Some(task) = vision_task {
-        let _ = task.await;
-    }
+    state.vision_control.stop().await;
+    server_result??;
+    pipeline_result?;
     tracing::info!("sentinel-streaming stopped");
     Ok(())
 }

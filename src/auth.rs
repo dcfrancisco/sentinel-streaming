@@ -268,7 +268,7 @@ impl BearerAuthenticator {
     }
 
     #[cfg(test)]
-    fn from_test_tokens(tokens: &[(&str, Principal)]) -> Self {
+    pub(crate) fn from_test_tokens(tokens: &[(&str, Principal)]) -> Self {
         Self {
             tokens: Arc::new(
                 tokens
