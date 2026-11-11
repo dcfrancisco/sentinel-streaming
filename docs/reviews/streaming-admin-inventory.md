@@ -106,3 +106,45 @@ secrets into issues, logs, tests, or documentation.
 
 No physical camera, browser interaction or live OpenAI verification was
 performed. These results do not establish production readiness.
+
+## Camera-first console redesign
+
+The embedded console was reorganized into Overview, Cameras, Discovery, AI
+Vision, and Settings views. Cameras is the default view and uses compact cards,
+real frame-endpoint previews only, and a detail dialog for lifecycle actions,
+technical data, supported RTSP playback, capture, and PTZ controls. Discovery
+distinguishes empty ONVIF results from unsupported, permission, timeout, and
+network failures, and retains manual RTSP registration. The manual URL form
+accepts query strings while rejecting embedded credentials. WebRTC peer
+connections are closed when the detail dialog is dismissed.
+
+The review also corrected the UI's source-kind and media-gateway field mapping
+to match the API's serialized response shapes. Discovery error mapping now
+labels an unreachable device differently from an unreachable discovery
+network. README and admin-console documentation describe the implemented
+views, camera setup, security mode, runtime limitations, and a real-camera
+smoke-test procedure; the procedure is guidance, not evidence that hardware or
+live OpenAI was tested.
+
+The single-active-source limitation remains: multiple cameras can be
+registered, but the runtime cannot stream and preview each independently at
+the same time. Configuration mutation and durable camera editing also remain
+unavailable. The implementation is not claimed to satisfy the original
+acceptance criterion for simultaneous multi-camera management.
+
+### Verification for this redesign
+
+- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` passed
+  during this work.
+- The Rust suite was attempted twice. In both attempts,
+  `synthetic_service_stops_cleanly_through_api` failed because the child
+  service did not become ready in time. Running that test alone passed.
+- The embedded JavaScript syntax check passed before the final small UI
+  adjustments; no browser test was performed.
+- A release build was started, but final release-build status for the final
+  source snapshot is not confirmed.
+- No physical-camera or live OpenAI request was performed.
+
+Per the request to defer tests, no further validation was run after these
+verification results. Treat the UI and Rust changes as pending browser and
+full-suite verification.
